@@ -23,6 +23,10 @@ HIGH_MEM_SIZE = 0x100000000
 # gives the kernel RAM below 4 GiB, which the GPU needs (it does not reach above).
 MID_PHYS_BASE = int(__import__("os").environ.get("MIDBASE", "0x80000000"), 16)
 MID_MEM_SIZE = int(__import__("os").environ.get("MIDSIZE", "0x1c0000000"), 16)
+# spes (Redmi Note 11): see build(spes=True)
+SPES_PHYS_BASE = 0x80000000
+SPES_MEM_SIZE = 0x140000000
+SPES_ECID = 0x5350455300000001  # 'SPES' + 1, synthetic
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
 
@@ -76,8 +80,15 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
+def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, spes=False, ufs_node=True):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
+    if spes:
+        # Redmi Note 11 (spes, 2201117TY, 6 GB): live FDT memory = <0x40000000 0x3cc00000>, <0x80000000 1G>,
+        # <0xc0000000 4G>. 0x80000000..0x1c0000000 is one contiguous 5 GiB range; all fixed carve-outs are
+        # below 0x63900000 (same as topaz).
+        midmem = True
+        global MID_PHYS_BASE, MID_MEM_SIZE
+        MID_PHYS_BASE, MID_MEM_SIZE = SPES_PHYS_BASE, SPES_MEM_SIZE
     phys_base, mem_size = ((MID_PHYS_BASE, MID_MEM_SIZE) if midmem else
                            (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE))
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
@@ -110,7 +121,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         # files), so e.g. DataMigration never records LastSystemVersion and
         # migrates on every boot. Synthetic ECID (not the phone's); chip-id
         # of the A11 that the iPhone X userland expects.
-        ('unique-chip-id', struct.pack('<Q', SWEET_ECID)),
+        ('unique-chip-id', struct.pack('<Q', SPES_ECID if spes else SWEET_ECID)),
         ('chip-id', u32(0x8015)),
         # Security status as on a dev-fused, undemoted board (tuple 0,0,1,1):
         # MobileGestalt reads these from /chosen, and mobileactivationd's
@@ -183,11 +194,12 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
         # the kernel's AppleCLCD matches the compatible string.
         # launchd starts wifid only when the device tree has a "wlan" node
         # (com.apple.wifid _LimitLoadToDeviceTree = wlan, marconi-wifi)
-        node('wlan', [
+        # (not on spes: no WLAN/modem bring-up there yet)
+        *([] if spes else [node('wlan', [
             ph(),
             ('device_type', cstr('wlan')),
             ('compatible', cstr('topaz,wcn3988')),
-        ]),
+        ])]),
         node('disp0', [
             ph(),
             ('device_type', cstr('display-subsystem')),
@@ -243,19 +255,20 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False):
     # SweetPlatformExpert and CPU IONameMatch still use them.
     return node('device-tree', [
         ph(),
-        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,topaz') + cstr('xiaomi,sweet') + cstr('qcom,khaje') + cstr('AppleARM')),
+        ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('xiaomi,spes' if spes else 'xiaomi,topaz') + cstr('xiaomi,sweet') + cstr('qcom,khaje') + cstr('AppleARM')),
         ('model', cstr('iPhone10,3')),
         ('target-type', cstr('D22')),
         ('target-sub-type', cstr('D22AP')),
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if qemu else [ufs]))
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if (qemu or not ufs_node) else [ufs]))
 
 
 if __name__ == '__main__':
     root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv,
-                 native='--native' in sys.argv, midmem='--midmem' in sys.argv)
+                 native='--native' in sys.argv, midmem='--midmem' in sys.argv,
+                 spes='--spes' in sys.argv, ufs_node='--no-ufs' not in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
