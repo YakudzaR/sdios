@@ -39,6 +39,7 @@ SWEET_ECID = 0x544f50415a000001  # 'TOPAZ' + 1, synthetic
 FB_W, FB_H, FB_STRIDE = 1080, 2400, 1080 * 4
 # Internal UFS host (ufshc@4804000 "ufs_mem"); QEMU virt has none
 UFS, UFS_SIZE = 0x04804000, 0x3000
+SDHC, SDHC_SIZE = 0x04784000, 0x1000   # sdhci@4784000 hc_mem (spes microSD)
 TIMEBASE = 19200000
 VTIMER_INTID = 19
 # QEMU virt (-M virt,gic-version=3 -cpu cortex-a76): GICD/GICR and the generic timer's CNTFRQ
@@ -226,6 +227,13 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, spes
         ('reg', u64(UFS, UFS_SIZE)),
     ])
 
+    # bsd/dev/sweet_ufs.c (patch 0951): the microSD host on spes (sdhci@4784000, sdhc2), absolute physical reg.
+    sdhc = node('sweet-sd', [
+        ph(),
+        ('compatible', cstr('qcom,sdhci-msm-v5')),
+        ('reg', u64(SDHC, SDHC_SIZE)),
+    ])
+
     # pmap_compute_max_asids requires the node even when no overrides are set.
     # An absent pmap-max-asids property selects XNU's own MAX_ASIDS default.
     # No effaceable storage: keybagd then reads /private/var/keybags/systembag.kb
@@ -262,7 +270,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, spes
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if (qemu or not ufs_node) else [ufs]))
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if (qemu or not ufs_node) else [ufs]) + ([sdhc] if spes else []))
 
 
 if __name__ == '__main__':

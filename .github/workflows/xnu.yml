@@ -22,6 +22,9 @@ on:
       - ".github/workflows/xnu.yml"
 
 
+permissions:
+  contents: write
+
 concurrency:
   group: xnu-${{ github.ref }}
   cancel-in-progress: true
@@ -146,6 +149,23 @@ jobs:
           cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true
           ls -la out
           (cd out && shasum -a 256 kernel.* > SHA256SUMS) || true
+
+      - name: Publish kernel to the builds branch (spes only)
+        if: always() && github.ref_name == 'spes'
+        run: |
+          set -e
+          rm -rf pub && mkdir pub && cd pub
+          git init -q && git checkout -q -b builds
+          for f in ../out/kernel.*; do
+            [ -f "$f" ] || continue
+            gzip -9 -c "$f" > "$(basename "$f").gz"
+          done
+          cp ../out/SHA256SUMS . 2>/dev/null || true
+          echo "$GITHUB_SHA" > SOURCE_COMMIT
+          ls -la
+          git add -A
+          git -c user.name=ci -c user.email=ci@example.invalid commit -qm "kernel from $GITHUB_SHA"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" builds
 
       - uses: actions/upload-artifact@v4
         if: always()
