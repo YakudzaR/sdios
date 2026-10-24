@@ -1,8 +1,8 @@
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index 143db60..5080fe4 100644
+index 143db60..43c609d 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
-@@ -976,11 +976,17 @@ sweet_log_start(void)
+@@ -976,11 +976,18 @@ sweet_log_start(void)
  /* Root device for rd=ufsroot0 (IOFindBSDRoot). */
  int sweet_ufs_rootdev(dev_t *dev);
  
@@ -11,6 +11,7 @@ index 143db60..5080fe4 100644
  int
  sweet_ufs_rootdev(dev_t *dev)
  {
++	printf("SWEET: root device lookup\n");
  	if (!su.ready) {
  		int error = sweet_ufs_init();
 +		if (error == ENXIO) {
@@ -20,7 +21,7 @@ index 143db60..5080fe4 100644
  		if (error) {
  			return error;
  		}
-@@ -988,4 +994,813 @@ sweet_ufs_rootdev(dev_t *dev)
+@@ -988,4 +995,823 @@ sweet_ufs_rootdev(dev_t *dev)
  	*dev = su.bdev;
  	return 0;
  }
@@ -421,6 +422,7 @@ index 143db60..5080fe4 100644
 +sd_take_over(void)
 +{
 +	uint32_t resp[4] = { 0, 0, 0, 0 };
++	printf("SWEET SD: take-over: host reset\n");
 +
 +	sdw8(SDR_SWRST, 1);
 +	if (sd_wait8(SDR_SWRST, 1, false, 100)) {
@@ -435,6 +437,7 @@ index 143db60..5080fe4 100644
 +	sdw32(0xe0, 0xf);                                /* as in the bare-metal bring-up (M5c) */
 +	sdw8(SDR_PWR, 0x0D);                               /* 3.3 V on */
 +	sd_delay_us(5000);
++	printf("SWEET SD: take-over: power on, identifying (present 0x%x caps 0x%x)\n", sdr32(SDR_PRESENT), sdr32(0x40));
 +
 +	static const uint16_t cand[] = { 250, 125, 24, 12, 1 };
 +	bool ok = false, v2 = false;
@@ -470,6 +473,7 @@ index 143db60..5080fe4 100644
 +		printf("SWEET SD: no card answered (ACMD41)\n");
 +		return ENXIO;
 +	}
++	printf("SWEET SD: take-over: ACMD41 done, ocr 0x%x\n", ocr);
 +	if (!(ocr & 0x40000000u)) {
 +		printf("SWEET SD: byte-addressed card (OCR 0x%x) not supported\n", ocr);
 +		return ENOTSUP;
@@ -486,12 +490,14 @@ index 143db60..5080fe4 100644
 +		return EIO;
 +	}
 +	sdc.card_sectors = sd_csd_sectors(csd);
++	printf("SWEET SD: take-over: rca 0x%x, %llu sectors\n", sdc.rca, (unsigned long long)sdc.card_sectors);
 +	if (sd_cmd(7, sdc.rca << 16, 3, true, true, resp) ||
 +	    sd_cmd(55, sdc.rca << 16, 2, true, true, resp) || sd_cmd(6, 2, 2, true, true, resp)) {
 +		printf("SWEET SD: select / 4-bit bus failed\n");
 +		return EIO;
 +	}
 +	sdw8(SDR_HOSTCTL, (uint8_t)(sdr8(SDR_HOSTCTL) | 2));  /* 4-bit */
++	printf("SWEET SD: take-over: selected, 4-bit; high-speed switch\n");
 +
 +	/* High speed (CMD6 mode 1): switch function group 1 to function 1, check the answer. */
 +	(void)sd_set_clock(2);                          /* ~25 MHz while switching */
@@ -505,6 +511,7 @@ index 143db60..5080fe4 100644
 +		sd_delay_us(10000);
 +	}
 +
++	printf("SWEET SD: take-over: high-speed %s; finding the clock\n", hs ? "on" : "off");
 +	/* Fastest divider at which two reads of the first sectors agree. */
 +	static const uint16_t speeds[] = { 1, 2, 4, 8, 16 };
 +	for (int i = hs ? 0 : 1; i < 5; i++) {
@@ -771,7 +778,9 @@ index 143db60..5080fe4 100644
 +	uint32_t rw = 0;
 +	(void)PE_parse_boot_argn("sdrw", &rw, sizeof(rw));
 +
++	printf("SWEET SD: init: mapping 0x%llx\n", (unsigned long long)reg[0]);
 +	sdc.regs = ml_io_map(reg[0], reg[1]);
++	printf("SWEET SD: init: mapped at 0x%lx, allocating DMA memory\n", (unsigned long)sdc.regs);
 +	/* The host does 32-bit ADMA2 addresses: keep the bounce buffer below 4 GiB. */
 +	if (kmem_alloc_contig(kernel_map, &sdc.dma, SDB_DMA, PAGE_MASK,
 +	    (ppnum_t)((1ull << 32) >> PAGE_SHIFT) - 1, 0,
@@ -784,6 +793,7 @@ index 143db60..5080fe4 100644
 +		return ENOMEM;
 +	}
 +	sdc.dma_pa = ptoa_64(pn);
++	printf("SWEET SD: init: DMA memory at pa 0x%llx\n", (unsigned long long)sdc.dma_pa);
 +	if ((sdc.dma_pa + SDB_DMA - 1) >> 32) {
 +		printf("SWEET SD: DMA memory at 0x%llx is above 4 GiB\n", sdc.dma_pa);
 +		return ENOMEM;
@@ -824,6 +834,7 @@ index 143db60..5080fe4 100644
 +int
 +sweet_sd_rootdev(dev_t *dev)
 +{
++	printf("SWEET SD: root device requested\n");
 +	if (!sdc.ready) {
 +		int error = sweet_sd_init();
 +		if (error) {

@@ -23,9 +23,6 @@
  * sweet_ufs_rootdev() hands over to sweet_sd_rootdev() (IOKitBSDInit.cpp
  * only knows that name).
  */
-#include <stdint.h>
-#include <stddef.h>
-
 /* ---------------- pure helpers (host-tested, no kernel types) ---------------- */
 
 struct sd_mbr_ent { uint8_t status, type; uint32_t lba, sectors; };
@@ -100,56 +97,34 @@ sd_csd_sectors(const uint32_t r[4])
 #undef CSD_BITS
 }
 
-#if defined(ARM64_BOARD_CONFIG_SWEET)
-#include <sys/param.h>
-#include <sys/systm.h>
-#include <sys/buf.h>
-#include <sys/conf.h>
-#include <sys/disk.h>
-#include <sys/errno.h>
-#include <sys/proc.h>
-#include <sys/uio.h>
-#include <miscfs/devfs/devfs.h>
-#include <kern/locks.h>
-#include <kern/clock.h>
-#include <machine/machine_routines.h>
-#include <arm/caches_internal.h>
-#include <vm/pmap.h>
-#include <vm/vm_kern.h>
-#include <pexpert/pexpert.h>
-#include <pexpert/device_tree.h>
-#include <libkern/libkern.h>
 
-extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
-/* osfmk/arm/machine_routines.h, not exported to the BSD layer */
-extern vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
 
 /* SDHCI register offsets (hc_mem). */
-#define R_BLKSZ     0x04    /* 16 */
-#define R_BLKCNT    0x06    /* 16 */
-#define R_ARG       0x08
-#define R_XFER      0x0C    /* 16 */
-#define R_CMD       0x0E    /* 16 */
-#define R_RESP      0x10
-#define R_PRESENT   0x24
-#define R_HOSTCTL   0x28    /* 8 */
-#define R_PWR       0x29    /* 8 */
-#define R_CLK       0x2C    /* 16 */
-#define R_TIMEOUT   0x2E    /* 8 */
-#define R_SWRST     0x2F    /* 8 */
-#define R_INT       0x30
-#define R_INT_EN    0x34    /* 16: normal status enable; 0x36 error status enable; 0x38/0x3A signal enables */
-#define R_ADMAERR   0x54
-#define R_ADMAADDR  0x58
+#define SDR_BLKSZ     0x04    /* 16 */
+#define SDR_BLKCNT    0x06    /* 16 */
+#define SDR_ARG       0x08
+#define SDR_XFER      0x0C    /* 16 */
+#define SDR_CMD       0x0E    /* 16 */
+#define SDR_RESP      0x10
+#define SDR_PRESENT   0x24
+#define SDR_HOSTCTL   0x28    /* 8 */
+#define SDR_PWR       0x29    /* 8 */
+#define SDR_CLK       0x2C    /* 16 */
+#define SDR_TIMEOUT   0x2E    /* 8 */
+#define SDR_SWRST     0x2F    /* 8 */
+#define SDR_INT       0x30
+#define SDR_INT_EN    0x34    /* 16: normal status enable; 0x36 error status enable; 0x38/0x3A signal enables */
+#define SDR_ADMAERR   0x54
+#define SDR_ADMAADDR  0x58
 
 #define SD_BLOCK        512u
-#define BOUNCE_SIZE     (1u << 20)
+#define SDB_SIZE     (1u << 20)
 #define ADMA_SEG        0x8000u                 /* bytes per descriptor */
-#define DMA_TBL         0x0000u                 /* 32 descriptors x 8 bytes */
-#define DMA_BOUNCE      0x4000u
-#define DMA_SIZE        (DMA_BOUNCE + BOUNCE_SIZE)
-#define CMD_TIMEOUT_NS  (200ull * 1000 * 1000)
-#define XFER_TIMEOUT_NS (4000ull * 1000 * 1000)
+#define SDB_TBL         0x0000u                 /* 32 descriptors x 8 bytes */
+#define SDB_BOUNCE      0x4000u
+#define SDB_DMA        (SDB_BOUNCE + SDB_SIZE)
+#define SDC_TIMEOUT_NS  (200ull * 1000 * 1000)
+#define SDX_TIMEOUT_NS (4000ull * 1000 * 1000)
 
 struct adma_desc {
 	uint16_t attr;
@@ -169,32 +144,32 @@ static struct {
 	bool ready;
 	int bmajor, cmajor;
 	dev_t bdev;
-} sd;
+} sdc;
 
-static LCK_GRP_DECLARE(sweet_sd_grp, "sweet_sd");
-static LCK_MTX_DECLARE(sweet_sd_lock, &sweet_sd_grp);
+static LCK_GRP_DECLARE(sweet_sd_lck_grp, "sweet_sd");
+static LCK_MTX_DECLARE(sweet_sd_lock, &sweet_sd_lck_grp);
 
-static inline uint8_t  rd8(uint32_t o)  { return *(volatile uint8_t *)(sd.regs + o); }
-static inline uint16_t rd16(uint32_t o) { return *(volatile uint16_t *)(sd.regs + o); }
-static inline uint32_t rd32(uint32_t o) { return *(volatile uint32_t *)(sd.regs + o); }
-static inline void wr8(uint32_t o, uint8_t v)   { *(volatile uint8_t *)(sd.regs + o) = v; }
-static inline void wr16(uint32_t o, uint16_t v) { *(volatile uint16_t *)(sd.regs + o) = v; }
-static inline void wr32(uint32_t o, uint32_t v) { *(volatile uint32_t *)(sd.regs + o) = v; }
+static inline uint8_t  sdr8(uint32_t o)  { return *(volatile uint8_t *)(sdc.regs + o); }
+static inline uint16_t sdr16(uint32_t o) { return *(volatile uint16_t *)(sdc.regs + o); }
+static inline uint32_t sdr32(uint32_t o) { return *(volatile uint32_t *)(sdc.regs + o); }
+static inline void sdw8(uint32_t o, uint8_t v)   { *(volatile uint8_t *)(sdc.regs + o) = v; }
+static inline void sdw16(uint32_t o, uint16_t v) { *(volatile uint16_t *)(sdc.regs + o) = v; }
+static inline void sdw32(uint32_t o, uint32_t v) { *(volatile uint32_t *)(sdc.regs + o) = v; }
 
 static void
-dma_sync(uint32_t off, uint32_t len)
+sd_dma_sync(uint32_t off, uint32_t len)
 {
-	flush_dcache64((addr64_t)(sd.dma_pa + off), len, TRUE);
+	flush_dcache64((addr64_t)(sdc.dma_pa + off), len, TRUE);
 }
 
 static void
-dma_clean(uint32_t off, uint32_t len)
+sd_dma_clean(uint32_t off, uint32_t len)
 {
-	clean_dcache64((addr64_t)(sd.dma_pa + off), len, TRUE);
+	clean_dcache64((addr64_t)(sdc.dma_pa + off), len, TRUE);
 }
 
 static uint64_t
-ns_to_abs(uint64_t ns)
+sd_ns_to_abs(uint64_t ns)
 {
 	uint64_t t;
 	nanoseconds_to_absolutetime(ns, &t);
@@ -204,16 +179,16 @@ ns_to_abs(uint64_t ns)
 static void
 sd_delay_us(uint32_t us)
 {
-	uint64_t end = mach_absolute_time() + ns_to_abs((uint64_t)us * 1000);
+	uint64_t end = mach_absolute_time() + sd_ns_to_abs((uint64_t)us * 1000);
 	while (mach_absolute_time() < end) {
 	}
 }
 
 static int
-wait8(uint32_t o, uint8_t mask, bool want_set, uint32_t ms)
+sd_wait8(uint32_t o, uint8_t mask, bool want_set, uint32_t ms)
 {
-	uint64_t end = mach_absolute_time() + ns_to_abs((uint64_t)ms * 1000000);
-	while (((rd8(o) & mask) != 0) != want_set) {
+	uint64_t end = mach_absolute_time() + sd_ns_to_abs((uint64_t)ms * 1000000);
+	while (((sdr8(o) & mask) != 0) != want_set) {
 		if (mach_absolute_time() > end) {
 			return ETIMEDOUT;
 		}
@@ -222,10 +197,10 @@ wait8(uint32_t o, uint8_t mask, bool want_set, uint32_t ms)
 }
 
 static int
-wait16(uint32_t o, uint16_t mask, bool want_set, uint32_t ms)
+sd_wait16(uint32_t o, uint16_t mask, bool want_set, uint32_t ms)
 {
-	uint64_t end = mach_absolute_time() + ns_to_abs((uint64_t)ms * 1000000);
-	while (((rd16(o) & mask) != 0) != want_set) {
+	uint64_t end = mach_absolute_time() + sd_ns_to_abs((uint64_t)ms * 1000000);
+	while (((sdr16(o) & mask) != 0) != want_set) {
 		if (mach_absolute_time() > end) {
 			return ETIMEDOUT;
 		}
@@ -236,12 +211,12 @@ wait16(uint32_t o, uint16_t mask, bool want_set, uint32_t ms)
 static int
 sd_set_clock(uint32_t div)
 {
-	wr16(R_CLK, 0);
-	wr16(R_CLK, (uint16_t)((div << 8) | 1));        /* internal clock on */
-	if (wait16(R_CLK, 2, true, 20)) {               /* ... stable */
+	sdw16(SDR_CLK, 0);
+	sdw16(SDR_CLK, (uint16_t)((div << 8) | 1));        /* internal clock on */
+	if (sd_wait16(SDR_CLK, 2, true, 20)) {               /* ... stable */
 		return ETIMEDOUT;
 	}
-	wr16(R_CLK, (uint16_t)((div << 8) | 5));        /* SD clock on */
+	sdw16(SDR_CLK, (uint16_t)((div << 8) | 5));        /* SD clock on */
 	sd_delay_us(5000);
 	return 0;
 }
@@ -249,28 +224,28 @@ sd_set_clock(uint32_t div)
 static void
 sd_reset_lines(void)
 {
-	wr8(R_SWRST, 6);                                /* CMD + DAT lines */
-	(void)wait8(R_SWRST, 6, false, 20);
+	sdw8(SDR_SWRST, 6);                                /* CMD + DAT lines */
+	(void)sd_wait8(SDR_SWRST, 6, false, 20);
 }
 
 /* A command without data. resp: 0 none, 2 = 48-bit, 1 = 136-bit, 3 = 48-bit with busy. */
 static int
 sd_cmd(uint32_t idx, uint32_t arg, uint32_t resp, bool crc, bool chk, uint32_t r[4])
 {
-	uint64_t end = mach_absolute_time() + ns_to_abs(CMD_TIMEOUT_NS);
-	while (rd32(R_PRESENT) & 3) {
+	uint64_t end = mach_absolute_time() + sd_ns_to_abs(SDC_TIMEOUT_NS);
+	while (sdr32(SDR_PRESENT) & 3) {
 		if (mach_absolute_time() > end) {
 			return ETIMEDOUT;
 		}
 	}
-	wr32(R_INT, 0xffffffffu);
-	wr32(R_ARG, arg);
-	wr16(R_XFER, 0);
-	wr16(R_CMD, (uint16_t)((idx << 8) | resp | (crc ? 8 : 0) | (chk ? 16 : 0)));
-	end = mach_absolute_time() + ns_to_abs(CMD_TIMEOUT_NS);
+	sdw32(SDR_INT, 0xffffffffu);
+	sdw32(SDR_ARG, arg);
+	sdw16(SDR_XFER, 0);
+	sdw16(SDR_CMD, (uint16_t)((idx << 8) | resp | (crc ? 8 : 0) | (chk ? 16 : 0)));
+	end = mach_absolute_time() + sd_ns_to_abs(SDC_TIMEOUT_NS);
 	uint32_t st;
 	for (;;) {
-		st = rd32(R_INT);
+		st = sdr32(SDR_INT);
 		if ((st & 1) || (st >> 16)) {
 			break;
 		}
@@ -279,14 +254,14 @@ sd_cmd(uint32_t idx, uint32_t arg, uint32_t resp, bool crc, bool chk, uint32_t r
 			return ETIMEDOUT;
 		}
 	}
-	wr32(R_INT, st);
+	sdw32(SDR_INT, st);
 	if (st >> 16) {
 		sd_reset_lines();
 		return EIO;
 	}
 	if (resp && r) {
 		for (int i = 0; i < 4; i++) {
-			r[i] = rd32(R_RESP + 4 * i);
+			r[i] = sdr32(SDR_RESP + 4 * i);
 		}
 	}
 	return 0;
@@ -294,45 +269,45 @@ sd_cmd(uint32_t idx, uint32_t arg, uint32_t resp, bool crc, bool chk, uint32_t r
 
 /*
  * One data command (CMD6 status, CMD17/18 read, CMD24/25 write) through ADMA2
- * and the bounce buffer. blksz*nblk <= BOUNCE_SIZE.
+ * and the bounce buffer. blksz*nblk <= SDB_SIZE.
  */
 static int
 sd_xfer(uint32_t idx, uint32_t arg, uint32_t blksz, uint32_t nblk, bool write)
 {
 	uint32_t bytes = blksz * nblk;
-	struct adma_desc *d = (struct adma_desc *)(sd.dma + DMA_TBL);
+	struct adma_desc *d = (struct adma_desc *)(sdc.dma + SDB_TBL);
 	uint32_t n = 0;
-	assert(bytes && bytes <= BOUNCE_SIZE);
+	assert(bytes && bytes <= SDB_SIZE);
 
 	for (uint32_t off = 0; off < bytes; n++) {
 		uint32_t len = MIN(ADMA_SEG, bytes - off);
 		bool last = (off + len) >= bytes;
 		d[n].attr = (uint16_t)(0x21 | (last ? 2 : 0));  /* valid, act = tran, end */
 		d[n].len = (uint16_t)len;
-		d[n].addr = (uint32_t)(sd.dma_pa + DMA_BOUNCE + off);
+		d[n].addr = (uint32_t)(sdc.dma_pa + SDB_BOUNCE + off);
 		off += len;
 	}
-	dma_clean(DMA_TBL, n * sizeof(*d));
+	sd_dma_clean(SDB_TBL, n * sizeof(*d));
 	if (write) {
-		dma_clean(DMA_BOUNCE, bytes);
+		sd_dma_clean(SDB_BOUNCE, bytes);
 	} else {
-		dma_sync(DMA_BOUNCE, bytes);
+		sd_dma_sync(SDB_BOUNCE, bytes);
 	}
 	__builtin_arm_dsb(0xf);
 
-	uint64_t end = mach_absolute_time() + ns_to_abs(CMD_TIMEOUT_NS);
-	while (rd32(R_PRESENT) & 3) {
+	uint64_t end = mach_absolute_time() + sd_ns_to_abs(SDC_TIMEOUT_NS);
+	while (sdr32(SDR_PRESENT) & 3) {
 		if (mach_absolute_time() > end) {
 			return ETIMEDOUT;
 		}
 	}
-	wr32(R_INT, 0xffffffffu);
-	wr32(R_ADMAADDR, (uint32_t)(sd.dma_pa + DMA_TBL));
-	wr32(R_ADMAADDR + 4, 0);
-	wr8(R_HOSTCTL, (uint8_t)((rd8(R_HOSTCTL) & ~0x18) | 0x10));    /* ADMA2, 32-bit */
-	wr16(R_BLKSZ, (uint16_t)blksz);
-	wr16(R_BLKCNT, (uint16_t)nblk);
-	wr32(R_ARG, arg);
+	sdw32(SDR_INT, 0xffffffffu);
+	sdw32(SDR_ADMAADDR, (uint32_t)(sdc.dma_pa + SDB_TBL));
+	sdw32(SDR_ADMAADDR + 4, 0);
+	sdw8(SDR_HOSTCTL, (uint8_t)((sdr8(SDR_HOSTCTL) & ~0x18) | 0x10));    /* ADMA2, 32-bit */
+	sdw16(SDR_BLKSZ, (uint16_t)blksz);
+	sdw16(SDR_BLKCNT, (uint16_t)nblk);
+	sdw32(SDR_ARG, arg);
 	uint16_t mode = 1;                                              /* DMA enable */
 	if (!write) {
 		mode |= 0x10;
@@ -340,21 +315,21 @@ sd_xfer(uint32_t idx, uint32_t arg, uint32_t blksz, uint32_t nblk, bool write)
 	if (nblk > 1) {
 		mode |= 0x26;                                           /* multi + block count + auto CMD12 */
 	}
-	wr16(R_XFER, mode);
-	wr16(R_CMD, (uint16_t)((idx << 8) | 2 | 8 | 16 | 32));        /* R1, CRC + index check, data present */
+	sdw16(SDR_XFER, mode);
+	sdw16(SDR_CMD, (uint16_t)((idx << 8) | 2 | 8 | 16 | 32));        /* R1, CRC + index check, data present */
 
 	int rc = 0;
-	end = mach_absolute_time() + ns_to_abs(XFER_TIMEOUT_NS);
+	end = mach_absolute_time() + sd_ns_to_abs(SDX_TIMEOUT_NS);
 	for (;;) {
-		uint32_t st = rd32(R_INT);
+		uint32_t st = sdr32(SDR_INT);
 		if (st >> 16) {
-			printf("SWEET SD: CMD%u error int 0x%x adma 0x%x\n", idx, st, rd32(R_ADMAERR));
-			wr32(R_INT, st);
+			printf("SWEET SD: CMD%u error int 0x%x adma 0x%x\n", idx, st, sdr32(SDR_ADMAERR));
+			sdw32(SDR_INT, st);
 			rc = EIO;
 			break;
 		}
 		if (st & 2) {
-			wr32(R_INT, st);
+			sdw32(SDR_INT, st);
 			break;
 		}
 		if (mach_absolute_time() > end) {
@@ -363,13 +338,13 @@ sd_xfer(uint32_t idx, uint32_t arg, uint32_t blksz, uint32_t nblk, bool write)
 			break;
 		}
 	}
-	wr8(R_HOSTCTL, (uint8_t)(rd8(R_HOSTCTL) & ~0x18));
+	sdw8(SDR_HOSTCTL, (uint8_t)(sdr8(SDR_HOSTCTL) & ~0x18));
 	if (rc) {
 		sd_reset_lines();
 		return rc;
 	}
 	if (!write) {
-		dma_sync(DMA_BOUNCE, bytes);
+		sd_dma_sync(SDB_BOUNCE, bytes);
 	}
 	return 0;
 }
@@ -378,10 +353,10 @@ sd_xfer(uint32_t idx, uint32_t arg, uint32_t blksz, uint32_t nblk, bool write)
 static int
 sd_wait_ready(void)
 {
-	uint64_t end = mach_absolute_time() + ns_to_abs(2000ull * 1000 * 1000);
+	uint64_t end = mach_absolute_time() + sd_ns_to_abs(2000ull * 1000 * 1000);
 	for (;;) {
 		uint32_t r[4];
-		int e = sd_cmd(13, sd.rca << 16, 2, true, true, r);
+		int e = sd_cmd(13, sdc.rca << 16, 2, true, true, r);
 		if (e) {
 			return e;
 		}
@@ -419,20 +394,22 @@ static int
 sd_take_over(void)
 {
 	uint32_t resp[4] = { 0, 0, 0, 0 };
+	printf("SWEET SD: take-over: host reset\n");
 
-	wr8(R_SWRST, 1);
-	if (wait8(R_SWRST, 1, false, 100)) {
+	sdw8(SDR_SWRST, 1);
+	if (sd_wait8(SDR_SWRST, 1, false, 100)) {
 		printf("SWEET SD: host reset stuck\n");
 		return EIO;
 	}
-	wr16(R_INT_EN, 0xffff);
-	wr16(R_INT_EN + 2, 0xffff);
-	wr16(R_INT_EN + 4, 0);
-	wr16(R_INT_EN + 6, 0);
-	wr8(R_TIMEOUT, 0xE);
-	wr32(0xe0, 0xf);                                /* as in the bare-metal bring-up (M5c) */
-	wr8(R_PWR, 0x0D);                               /* 3.3 V on */
+	sdw16(SDR_INT_EN, 0xffff);
+	sdw16(SDR_INT_EN + 2, 0xffff);
+	sdw16(SDR_INT_EN + 4, 0);
+	sdw16(SDR_INT_EN + 6, 0);
+	sdw8(SDR_TIMEOUT, 0xE);
+	sdw32(0xe0, 0xf);                                /* as in the bare-metal bring-up (M5c) */
+	sdw8(SDR_PWR, 0x0D);                               /* 3.3 V on */
 	sd_delay_us(5000);
+	printf("SWEET SD: take-over: power on, identifying (present 0x%x caps 0x%x)\n", sdr32(SDR_PRESENT), sdr32(0x40));
 
 	static const uint16_t cand[] = { 250, 125, 24, 12, 1 };
 	bool ok = false, v2 = false;
@@ -444,7 +421,7 @@ sd_take_over(void)
 		(void)sd_cmd(0, 0, 0, false, false, resp);
 		sd_delay_us(2000);
 		v2 = (sd_cmd(8, 0x1AA, 2, true, true, resp) == 0) && ((resp[0] & 0xfff) == 0x1AA);
-		uint64_t end = mach_absolute_time() + ns_to_abs(1200ull * 1000 * 1000);
+		uint64_t end = mach_absolute_time() + sd_ns_to_abs(1200ull * 1000 * 1000);
 		while (mach_absolute_time() < end) {
 			if (sd_cmd(55, 0, 2, true, true, resp)) {
 				break;
@@ -460,7 +437,7 @@ sd_take_over(void)
 			sd_delay_us(10000);
 		}
 		if (!ok) {
-			wr16(R_CLK, 0);
+			sdw16(SDR_CLK, 0);
 			sd_delay_us(5000);
 		}
 	}
@@ -468,6 +445,7 @@ sd_take_over(void)
 		printf("SWEET SD: no card answered (ACMD41)\n");
 		return ENXIO;
 	}
+	printf("SWEET SD: take-over: ACMD41 done, ocr 0x%x\n", ocr);
 	if (!(ocr & 0x40000000u)) {
 		printf("SWEET SD: byte-addressed card (OCR 0x%x) not supported\n", ocr);
 		return ENOTSUP;
@@ -478,38 +456,41 @@ sd_take_over(void)
 		printf("SWEET SD: CMD2/CMD3 failed\n");
 		return EIO;
 	}
-	sd.rca = resp[0] >> 16;
-	if (sd_cmd(9, sd.rca << 16, 1, true, false, csd)) {
+	sdc.rca = resp[0] >> 16;
+	if (sd_cmd(9, sdc.rca << 16, 1, true, false, csd)) {
 		printf("SWEET SD: CMD9 failed\n");
 		return EIO;
 	}
-	sd.card_sectors = sd_csd_sectors(csd);
-	if (sd_cmd(7, sd.rca << 16, 3, true, true, resp) ||
-	    sd_cmd(55, sd.rca << 16, 2, true, true, resp) || sd_cmd(6, 2, 2, true, true, resp)) {
+	sdc.card_sectors = sd_csd_sectors(csd);
+	printf("SWEET SD: take-over: rca 0x%x, %llu sectors\n", sdc.rca, (unsigned long long)sdc.card_sectors);
+	if (sd_cmd(7, sdc.rca << 16, 3, true, true, resp) ||
+	    sd_cmd(55, sdc.rca << 16, 2, true, true, resp) || sd_cmd(6, 2, 2, true, true, resp)) {
 		printf("SWEET SD: select / 4-bit bus failed\n");
 		return EIO;
 	}
-	wr8(R_HOSTCTL, (uint8_t)(rd8(R_HOSTCTL) | 2));  /* 4-bit */
+	sdw8(SDR_HOSTCTL, (uint8_t)(sdr8(SDR_HOSTCTL) | 2));  /* 4-bit */
+	printf("SWEET SD: take-over: selected, 4-bit; high-speed switch\n");
 
 	/* High speed (CMD6 mode 1): switch function group 1 to function 1, check the answer. */
 	(void)sd_set_clock(2);                          /* ~25 MHz while switching */
 	bool hs = false;
 	if (sd_xfer(6, 0x80FFFFF1u, 64, 1, false) == 0) {
-		const uint8_t *sw = (const uint8_t *)(sd.dma + DMA_BOUNCE);
+		const uint8_t *sw = (const uint8_t *)(sdc.dma + SDB_BOUNCE);
 		hs = (sw[13] & 2) && ((sw[16] & 0xf) == 1);
 	}
 	if (hs) {
-		wr8(R_HOSTCTL, (uint8_t)(rd8(R_HOSTCTL) | 4));
+		sdw8(SDR_HOSTCTL, (uint8_t)(sdr8(SDR_HOSTCTL) | 4));
 		sd_delay_us(10000);
 	}
 
+	printf("SWEET SD: take-over: high-speed %s; finding the clock\n", hs ? "on" : "off");
 	/* Fastest divider at which two reads of the first sectors agree. */
 	static const uint16_t speeds[] = { 1, 2, 4, 8, 16 };
 	for (int i = hs ? 0 : 1; i < 5; i++) {
 		if (sd_set_clock(speeds[i])) {
 			continue;
 		}
-		uint8_t *b = (uint8_t *)(sd.dma + DMA_BOUNCE);
+		uint8_t *b = (uint8_t *)(sdc.dma + SDB_BOUNCE);
 		if (sd_read_blocks(0, 8)) {
 			continue;
 		}
@@ -527,7 +508,7 @@ sd_take_over(void)
 		if (sum1 == sum2) {
 			printf("SWEET SD: ocr 0x%x %s, 4-bit, %s, clock divider %u, %llu MiB\n", ocr,
 			    v2 ? "SDHC/SDXC" : "SD", hs ? "high-speed" : "default-speed", speeds[i],
-			    sd.card_sectors >> 11);
+			    sdc.card_sectors >> 11);
 			return 0;
 		}
 	}
@@ -554,31 +535,31 @@ sd_find_partition(void)
 		if (rc) {
 			return rc;
 		}
-		if (!sd_mbr_parse((const uint8_t *)(sd.dma + DMA_BOUNCE), e)) {
+		if (!sd_mbr_parse((const uint8_t *)(sdc.dma + SDB_BOUNCE), e)) {
 			printf("SWEET SD: no MBR on the card\n");
 			return ENXIO;
 		}
-		if (sd_pick_partition(e, (int)part, sd.card_sectors, &lba, &sectors)) {
+		if (sd_pick_partition(e, (int)part, sdc.card_sectors, &lba, &sectors)) {
 			printf("SWEET SD: no usable root partition (type 0xAF, or sdpart=1..4)\n");
 			return ENXIO;
 		}
 	}
-	if (!sectors || lba + sectors > sd.card_sectors || lba == 0) {
-		printf("SWEET SD: partition %llu+%llu outside the card (%llu sectors)\n", lba, sectors, sd.card_sectors);
+	if (!sectors || lba + sectors > sdc.card_sectors || lba == 0) {
+		printf("SWEET SD: partition %llu+%llu outside the card (%llu sectors)\n", lba, sectors, sdc.card_sectors);
 		return ERANGE;
 	}
-	sd.first_sector = lba;
-	sd.nsectors = sectors;
+	sdc.first_sector = lba;
+	sdc.nsectors = sectors;
 	return 0;
 }
 
 static int
 sweet_sd_open(__unused dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
 {
-	if (!sd.ready) {
+	if (!sdc.ready) {
 		return ENXIO;
 	}
-	return ((flags & FWRITE) && !sd.writable) ? EROFS : 0;
+	return ((flags & FWRITE) && !sdc.writable) ? EROFS : 0;
 }
 
 static int
@@ -592,13 +573,13 @@ sweet_sd_strategy(buf_t bp)
 {
 	int error = 0;
 	caddr_t vaddr = NULL;
-	uint64_t off = (uint64_t)buf_blkno(bp) * sd.secsize;
+	uint64_t off = (uint64_t)buf_blkno(bp) * sdc.secsize;
 	uint32_t count = buf_count(bp);
-	uint64_t part_bytes = sd.nsectors * SD_BLOCK;
+	uint64_t part_bytes = sdc.nsectors * SD_BLOCK;
 	bool rd = buf_flags(bp) & B_READ;
 
 	buf_setresid(bp, count);
-	if (!rd && !sd.writable) {
+	if (!rd && !sdc.writable) {
 		error = EROFS;
 		goto done;
 	}
@@ -616,10 +597,10 @@ sweet_sd_strategy(buf_t bp)
 
 	lck_mtx_lock(&sweet_sd_lock);
 	for (uint32_t done = 0; done < count;) {
-		uint32_t want = MIN(count - done, BOUNCE_SIZE);
-		uint64_t lba = sd.first_sector + (off + done) / SD_BLOCK;
+		uint32_t want = MIN(count - done, SDB_SIZE);
+		uint64_t lba = sdc.first_sector + (off + done) / SD_BLOCK;
 		uint32_t blocks = want / SD_BLOCK;
-		void *bounce = (void *)(sd.dma + DMA_BOUNCE);
+		void *bounce = (void *)(sdc.dma + SDB_BOUNCE);
 		if (rd) {
 			error = sd_read_blocks(lba, blocks);
 			if (!error) {
@@ -654,7 +635,7 @@ sweet_sd_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int flag,
 
 	switch (cmd) {
 	case DKIOCGETBLOCKSIZE:
-		*f = sd.secsize;
+		*f = sdc.secsize;
 		return 0;
 	case DKIOCSETBLOCKSIZE:
 		if (is_char) {
@@ -663,25 +644,25 @@ sweet_sd_ioctl(__unused dev_t dev, u_long cmd, caddr_t data, __unused int flag,
 		if (*f < SD_BLOCK || *f > 4096 || (*f & (*f - 1))) {
 			return EINVAL;
 		}
-		sd.secsize = *f;
+		sdc.secsize = *f;
 		return 0;
 	case DKIOCGETPHYSICALBLOCKSIZE:
 		*f = SD_BLOCK;
 		return 0;
 	case DKIOCGETBLOCKCOUNT:
-		*o = sd.nsectors * SD_BLOCK / sd.secsize;
+		*o = sdc.nsectors * SD_BLOCK / sdc.secsize;
 		return 0;
 	case DKIOCISWRITABLE:
-		*f = sd.writable;
+		*f = sdc.writable;
 		return 0;
 	case DKIOCSYNCHRONIZE:
 	case DKIOCSYNCHRONIZECACHE:
 		return 0;               /* every write waits for the card (CMD13) */
 	case DKIOCGETMAXBLOCKCOUNTREAD:
-		*o = BOUNCE_SIZE / sd.secsize;
+		*o = SDB_SIZE / sdc.secsize;
 		return 0;
 	case DKIOCGETMAXBLOCKCOUNTWRITE:
-		*o = sd.writable ? BOUNCE_SIZE / sd.secsize : 0;
+		*o = sdc.writable ? SDB_SIZE / sdc.secsize : 0;
 		return 0;
 	case DKIOCGETMAXSEGMENTCOUNTREAD:
 	case DKIOCGETMAXSEGMENTCOUNTWRITE:
@@ -707,22 +688,22 @@ sweet_sd_cioctl(dev_t dev, u_long cmd, caddr_t data, int flag, struct proc *p)
 static int
 sweet_sd_psize(__unused dev_t dev)
 {
-	return sd.ready ? (int)MIN(sd.nsectors * SD_BLOCK / sd.secsize, INT_MAX) : -1;
+	return sdc.ready ? (int)MIN(sdc.nsectors * SD_BLOCK / sdc.secsize, INT_MAX) : -1;
 }
 
 static int
 sweet_sd_read(dev_t dev, struct uio *uio, __unused int ioflag)
 {
-	return physio(sweet_sd_strategy, NULL, dev, B_READ, minphys, uio, (int)sd.secsize);
+	return physio(sweet_sd_strategy, NULL, dev, B_READ, minphys, uio, (int)sdc.secsize);
 }
 
 static int
 sweet_sd_write(dev_t dev, struct uio *uio, __unused int ioflag)
 {
-	if (!sd.writable) {
+	if (!sdc.writable) {
 		return EROFS;
 	}
-	return physio(sweet_sd_strategy, NULL, dev, B_WRITE, minphys, uio, (int)sd.secsize);
+	return physio(sweet_sd_strategy, NULL, dev, B_WRITE, minphys, uio, (int)sdc.secsize);
 }
 
 static const struct bdevsw sweet_sd_bdevsw = {
@@ -769,24 +750,27 @@ sweet_sd_init(void)
 	uint32_t rw = 0;
 	(void)PE_parse_boot_argn("sdrw", &rw, sizeof(rw));
 
-	sd.regs = ml_io_map(reg[0], reg[1]);
+	printf("SWEET SD: init: mapping 0x%llx\n", (unsigned long long)reg[0]);
+	sdc.regs = ml_io_map(reg[0], reg[1]);
+	printf("SWEET SD: init: mapped at 0x%lx, allocating DMA memory\n", (unsigned long)sdc.regs);
 	/* The host does 32-bit ADMA2 addresses: keep the bounce buffer below 4 GiB. */
-	if (kmem_alloc_contig(kernel_map, &sd.dma, DMA_SIZE, PAGE_MASK,
+	if (kmem_alloc_contig(kernel_map, &sdc.dma, SDB_DMA, PAGE_MASK,
 	    (ppnum_t)((1ull << 32) >> PAGE_SHIFT) - 1, 0,
 	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
 		printf("SWEET SD: no contiguous DMA memory below 4 GiB\n");
 		return ENOMEM;
 	}
-	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)sd.dma);
+	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)sdc.dma);
 	if (!pn) {
 		return ENOMEM;
 	}
-	sd.dma_pa = ptoa_64(pn);
-	if ((sd.dma_pa + DMA_SIZE - 1) >> 32) {
-		printf("SWEET SD: DMA memory at 0x%llx is above 4 GiB\n", sd.dma_pa);
+	sdc.dma_pa = ptoa_64(pn);
+	printf("SWEET SD: init: DMA memory at pa 0x%llx\n", (unsigned long long)sdc.dma_pa);
+	if ((sdc.dma_pa + SDB_DMA - 1) >> 32) {
+		printf("SWEET SD: DMA memory at 0x%llx is above 4 GiB\n", sdc.dma_pa);
 		return ENOMEM;
 	}
-	sd.secsize = SD_BLOCK;
+	sdc.secsize = SD_BLOCK;
 
 	lck_mtx_lock(&sweet_sd_lock);
 	error = sd_take_over();
@@ -798,21 +782,21 @@ sweet_sd_init(void)
 		return error;
 	}
 
-	sd.bmajor = bdevsw_add(-1, &sweet_sd_bdevsw);
-	if (sd.bmajor < 0) {
+	sdc.bmajor = bdevsw_add(-1, &sweet_sd_bdevsw);
+	if (sdc.bmajor < 0) {
 		return ENXIO;
 	}
-	sd.cmajor = cdevsw_add_with_bdev(-1, &sweet_sd_cdevsw, sd.bmajor);
-	if (sd.cmajor < 0) {
+	sdc.cmajor = cdevsw_add_with_bdev(-1, &sweet_sd_cdevsw, sdc.bmajor);
+	if (sdc.cmajor < 0) {
 		return ENXIO;
 	}
-	sd.bdev = makedev(sd.bmajor, 0);
-	devfs_make_node(sd.bdev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "sdroot0");
-	devfs_make_node(makedev(sd.cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rsdroot0");
-	sd.writable = (rw != 0);
-	sd.ready = true;
+	sdc.bdev = makedev(sdc.bmajor, 0);
+	devfs_make_node(sdc.bdev, DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640, "sdroot0");
+	devfs_make_node(makedev(sdc.cmajor, 0), DEVFS_CHAR, UID_ROOT, GID_OPERATOR, 0640, "rsdroot0");
+	sdc.writable = (rw != 0);
+	sdc.ready = true;
 	printf("SWEET SD: root partition: first sector %llu, %llu sectors (%llu MiB), %s, DMA at 0x%llx\n",
-	    sd.first_sector, sd.nsectors, sd.nsectors >> 11, sd.writable ? "read-write" : "read-only", sd.dma_pa);
+	    sdc.first_sector, sdc.nsectors, sdc.nsectors >> 11, sdc.writable ? "read-write" : "read-only", sdc.dma_pa);
 	return 0;
 }
 
@@ -822,13 +806,13 @@ int sweet_sd_rootdev(dev_t *dev);
 int
 sweet_sd_rootdev(dev_t *dev)
 {
-	if (!sd.ready) {
+	printf("SWEET SD: root device requested\n");
+	if (!sdc.ready) {
 		int error = sweet_sd_init();
 		if (error) {
 			return error;
 		}
 	}
-	*dev = sd.bdev;
+	*dev = sdc.bdev;
 	return 0;
 }
-#endif /* ARM64_BOARD_CONFIG_SWEET */
