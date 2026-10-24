@@ -1,0 +1,27 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index ba09c67..b83c53f 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -416,6 +416,7 @@ AppleCLCD::start(IOService *provider)
+ 		    fBootSrc, fBootStride);
+ 		sweet_scanout_set_geometry(fWidth, fHeight, fLogicalW, fLogicalH);
+ 		vm_size_t fsz = (vm_size_t)fRowBytes * fHeight;
++		IOLog("SWEET FB: allocating scanout buffers (%lu bytes each)\n", (unsigned long)fsz);
+ 		for (int i = 0; i < 2; i++) {
+ 			fFlip[i] = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 			    kIODirectionInOut | kIOMemoryPhysicallyContiguous, fsz, 0x00000000fffff000ull);
+@@ -430,6 +431,14 @@ AppleCLCD::start(IOService *provider)
+ 			OSSafeReleaseNULL(fFadeOrig);
+ 			OSSafeReleaseNULL(fCons);
+ 		}
++		IOLog("SWEET FB: scanout buffers allocated (flip %d%d, fade %d, shadow %d)\n",
++		    fFlip[0] != NULL, fFlip[1] != NULL, fFadeOrig != NULL, fCons != NULL);
++		uint32_t noShadow = 0;
++		if (fCons != NULL && PE_parse_boot_argn("sweetfb_noshadow", &noShadow, sizeof(noShadow)) && noShadow != 0) {
++			/* spes diagnostic: keep the kernel console on the boot framebuffer */
++			IOLog("SWEET FB: shadow console off (sweetfb_noshadow)\n");
++			OSSafeReleaseNULL(fCons);
++		}
+ 		if (fCons != NULL) {
+ 			uint8_t *c = (uint8_t *)fCons->getBytesNoCopy();
+ 			memcpy(c, (const void *)fPixels, fsz);  /* keep what the console drew */
