@@ -1,0 +1,85 @@
+spes: touch probe diagnostics (GPIO levels, I2C bus scan, AVDD low retry) in probe-only mode
+
+--- a/bsd/dev/sweet_touch.c	2026-10-25 19:25:20.689202507 +0000
++++ b/bsd/dev/sweet_touch.c	2026-10-25 19:25:20.691930148 +0000
+@@ -635,6 +635,50 @@
+ 	return true;
+ }
+ 
++/* spes diagnostics: GPIO input levels (IO reg bit0) of SDA, SCL, IRQ, RESET and the AVDD pin. */
++static void
++touch_levels(const char *tag)
++{
++	printf("SWEET TOUCH: levels %s: sda=%u scl=%u irq=%u reset=%u avdd=%u (cfg avdd %#x)\n", tag,
++	    touch_rd(st.west, TOUCH_GPIO_IO(6)) & 1u, touch_rd(st.west, TOUCH_GPIO_IO(7)) & 1u,
++	    touch_rd(st.west, TOUCH_GPIO_IO(TOUCH_PIN_IRQ)) & 1u, touch_rd(st.west, TOUCH_GPIO_IO(TOUCH_PIN_RESET)) & 1u,
++	    touch_rd(touch_tile(st.pin_avdd), TOUCH_GPIO_IO(st.pin_avdd)) & 1u,
++	    touch_rd(touch_tile(st.pin_avdd), TOUCH_GPIO_CFG(st.pin_avdd)));
++}
++
++/* spes diagnostics: which 7-bit addresses ACK a one-byte read. */
++static void
++touch_scan(const char *tag)
++{
++	char line[96];
++	unsigned n = 0, j = 0;
++	uint8_t b;
++	line[0] = 0;
++	for (unsigned a = 0x08; a <= 0x77; ++a) {
++		if (touch_msg((uint8_t)a, NULL, 0, &b, 1, false) == 0 && j < sizeof(line) - 6) {
++			j += (unsigned)snprintf(line + j, sizeof(line) - j, "%02x ", a);
++			n++;
++		}
++		if (st.dead) {
++			break;
++		}
++	}
++	printf("SWEET TOUCH: scan %s: %u devices ack: %s\n", tag, n, line);
++}
++
++static void
++touch_power_reset(bool avdd_high, unsigned wait_ms)
++{
++	touch_gpio(TOUCH_PIN_IRQ, 0, 3, 3, false, false);       /* CTL 0xc3 */
++	touch_gpio(st.pin_avdd, 0, 3, 3, true, avdd_high);      /* CTL 0x2c3 */
++	touch_gpio(6, 1, 0, 0, false, false);                   /* qup2 SDA, CTL 0x4 */
++	touch_gpio(7, 1, 0, 0, false, false);                   /* qup2 SCL */
++	touch_gpio(TOUCH_PIN_RESET, 0, 3, 3, true, false);      /* CTL 0x2c3, low */
++	touch_wait(20);
++	touch_gpio(TOUCH_PIN_RESET, 0, 3, 3, true, true);
++	touch_wait(wait_ms);
++}
++
+ static void
+ touch_thread(void *arg, wait_result_t result)
+ {
+@@ -675,14 +719,21 @@
+ 	    touch_rd(touch_tile(st.pin_avdd), TOUCH_GPIO_CFG(st.pin_avdd)),
+ 	    touch_rd(touch_tile(st.pin_avdd), TOUCH_GPIO_IO(st.pin_avdd)));
+ 	/* TopazTouch touch.c: IRQ input, AVDD on, I2C pins, then the reset pulse. */
+-	touch_gpio(TOUCH_PIN_IRQ, 0, 3, 3, false, false);       /* CTL 0xc3 */
+-	touch_gpio(st.pin_avdd, 0, 3, 3, true, true);           /* CTL 0x2c3, high */
+-	touch_gpio(6, 1, 0, 0, false, false);                   /* qup2 SDA, CTL 0x4 */
+-	touch_gpio(7, 1, 0, 0, false, false);                   /* qup2 SCL */
+-	touch_gpio(TOUCH_PIN_RESET, 0, 3, 3, true, false);      /* CTL 0x2c3, low */
+-	touch_wait(20);
+-	touch_gpio(TOUCH_PIN_RESET, 0, 3, 3, true, true);
+-	touch_wait(250);
++	touch_levels("before");
++	touch_power_reset(true, 250);
++	touch_levels("avdd high, reset released +250 ms");
++	if (st.probe_only) {
++		/* spes: nothing answered at 0x38/0x5d/0x20 in M11. Scan the whole bus, wait longer, scan again,
++		 * then try the opposite AVDD level. */
++		touch_scan("avdd high +250 ms");
++		touch_wait(1500);
++		touch_levels("+1750 ms");
++		touch_scan("avdd high +1750 ms");
++		touch_power_reset(false, 400);
++		touch_levels("avdd LOW, reset released +400 ms");
++		touch_scan("avdd low");
++		touch_power_reset(true, 250);
++	}
+ 	st.stage = "probe";
+ 	uint8_t gid[32], legacy[32], fid1 = 0, fid2 = 0;
+ 	st.probing = true;
