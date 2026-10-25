@@ -1,0 +1,48 @@
+spes: step through the AVDD GPIO with raw register readback (probe-only)
+
+--- a/bsd/dev/sweet_touch.c	2026-10-25 19:42:36.137438567 +0000
++++ b/bsd/dev/sweet_touch.c	2026-10-25 19:42:36.139685162 +0000
+@@ -666,6 +666,33 @@
+ 	printf("SWEET TOUCH: scan %s: %u devices ack: %s\n", tag, n, line);
+ }
+ 
++/* spes: M12 read AVDD (GPIO98) as 0 even with cfg 0xac3 written. Step through the pin, raw registers each time. */
++static void
++touch_avdd_test(void)
++{
++	vm_offset_t t = touch_tile(st.pin_avdd);
++	uint32_t c = TOUCH_GPIO_CFG(st.pin_avdd), io = TOUCH_GPIO_IO(st.pin_avdd);
++	static const uint32_t cfgs[] = {0x2c3u, 0x280u, 0x241u, 0x200u};
++	printf("SWEET TOUCH: avdd test pin %u tile %#lx: start cfg=%#x io=%#x\n", st.pin_avdd, (unsigned long)t,
++	    touch_rd(t, c), touch_rd(t, io));
++	for (unsigned i = 0; i < 4; ++i) {
++		touch_wr(t, io, 2u);
++		printf("SWEET TOUCH: avdd test: latch=1 -> io=%#x cfg=%#x\n", touch_rd(t, io), touch_rd(t, c));
++		touch_wr(t, c, cfgs[i]);
++		touch_wait(5);
++		printf("SWEET TOUCH: avdd test: cfg %#x written -> cfg=%#x io=%#x\n", cfgs[i], touch_rd(t, c), touch_rd(t, io));
++		touch_wr(t, io, 0u);
++		touch_wait(5);
++		printf("SWEET TOUCH: avdd test: latch=0 -> io=%#x\n", touch_rd(t, io));
++		touch_wr(t, io, 2u);
++		touch_wait(5);
++		printf("SWEET TOUCH: avdd test: latch=1 again -> io=%#x\n", touch_rd(t, io));
++	}
++	/* a pin that is known to work, for comparison: reset (GPIO86) */
++	printf("SWEET TOUCH: control reset pin cfg=%#x io=%#x\n", touch_rd(st.west, TOUCH_GPIO_CFG(TOUCH_PIN_RESET)),
++	    touch_rd(st.west, TOUCH_GPIO_IO(TOUCH_PIN_RESET)));
++}
++
+ static void
+ touch_power_reset(bool avdd_high, unsigned wait_ms)
+ {
+@@ -720,6 +747,9 @@
+ 	    touch_rd(touch_tile(st.pin_avdd), TOUCH_GPIO_IO(st.pin_avdd)));
+ 	/* TopazTouch touch.c: IRQ input, AVDD on, I2C pins, then the reset pulse. */
+ 	touch_levels("before");
++	if (st.probe_only) {
++		touch_avdd_test();
++	}
+ 	touch_power_reset(true, 250);
+ 	touch_levels("avdd high, reset released +250 ms");
+ 	if (st.probe_only) {
