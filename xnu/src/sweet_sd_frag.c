@@ -937,6 +937,8 @@ sweet_sd_init(void)
 	printf("SWEET SD: root partition: first sector %llu, %llu sectors (%llu MiB), %s, DMA at 0x%llx\n",
 	    sdc.first_sector, sdc.nsectors, sdc.nsectors >> 11, sdc.writable ? "read-write" : "read-only", sdc.dma_pa);
 	sweet_sd_log_start();
+	/* spes: the topaz touch driver (sweet_touch.c) never started on this path; boot-args sweettouch* select pins and mode. */
+	sweet_touch_init();
 	return 0;
 }
 
