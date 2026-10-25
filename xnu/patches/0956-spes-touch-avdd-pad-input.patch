@@ -1,0 +1,22 @@
+spes: AVDD pad input pull test (probe-only)
+
+--- a/bsd/dev/sweet_touch.c	2026-10-25 20:00:22.241962902 +0000
++++ b/bsd/dev/sweet_touch.c	2026-10-25 20:00:22.244016902 +0000
+@@ -688,6 +688,17 @@
+ 		touch_wait(5);
+ 		printf("SWEET TOUCH: avdd test: latch=1 again -> io=%#x\n", touch_rd(t, io));
+ 	}
++	/* As input: does the pad follow a pull-up / pull-down? (tells a strongly loaded pad from a dead one) */
++	{
++		static const uint32_t in_cfgs[] = {0x8c3u, 0x801u, 0x800u, 0x802u};
++		static const char *names[] = {"input pull-up", "input pull-down", "input no pull", "input keeper"};
++		touch_wr(t, io, 0u);
++		for (unsigned i = 0; i < 4; ++i) {
++			touch_wr(t, c, in_cfgs[i]);
++			touch_wait(5);
++			printf("SWEET TOUCH: avdd test: %s cfg=%#x -> io=%#x\n", names[i], touch_rd(t, c), touch_rd(t, io));
++		}
++	}
+ 	/* a pin that is known to work, for comparison: reset (GPIO86) */
+ 	printf("SWEET TOUCH: control reset pin cfg=%#x io=%#x\n", touch_rd(st.west, TOUCH_GPIO_CFG(TOUCH_PIN_RESET)),
+ 	    touch_rd(st.west, TOUCH_GPIO_IO(TOUCH_PIN_RESET)));
