@@ -1,0 +1,33 @@
+spes: inverted reset pulse and read-only TLMM dump (probe-only)
+
+--- a/bsd/dev/sweet_touch.c	2026-10-25 20:17:09.392969865 +0000
++++ b/bsd/dev/sweet_touch.c	2026-10-25 20:17:09.396573915 +0000
+@@ -773,6 +773,28 @@
+ 		touch_power_reset(false, 400);
+ 		touch_levels("avdd LOW, reset released +400 ms");
+ 		touch_scan("avdd low");
++		/* Reset the other way round: released first, then a low pulse, then a long wait. */
++		touch_gpio(st.pin_avdd, 0, 3, 3, true, true);
++		touch_gpio(TOUCH_PIN_RESET, 0, 3, 3, true, true);
++		touch_wait(100);
++		touch_gpio(TOUCH_PIN_RESET, 0, 3, 3, true, false);
++		touch_wait(100);
++		touch_gpio(TOUCH_PIN_RESET, 0, 3, 3, true, true);
++		touch_wait(800);
++		touch_levels("inverted reset pulse +800 ms");
++		touch_scan("inverted reset");
++		/* Read-only look at the TLMM pins 80..112 (WEST up to 87, SOUTH from 98): what ABL left behind. */
++		for (unsigned pin = 80; pin <= 112; ++pin) {
++			if (pin > 87 && pin < 96) {
++				continue;
++			}
++			vm_offset_t tl = pin >= 98 ? st.south : st.west;
++			if (pin >= 96 && pin < 98) {
++				tl = st.south;
++			}
++			printf("SWEET TOUCH: tlmm %u cfg=%#x io=%#x\n", pin,
++			    touch_rd(tl, TOUCH_GPIO_CFG(pin)), touch_rd(tl, TOUCH_GPIO_IO(pin)));
++		}
+ 		touch_power_reset(true, 250);
+ 	}
+ 	st.stage = "probe";
