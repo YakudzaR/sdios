@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index 143db60..43c609d 100644
+index 143db60..ea39e23 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
 @@ -976,11 +976,18 @@ sweet_log_start(void)
@@ -21,7 +21,7 @@ index 143db60..43c609d 100644
  		if (error) {
  			return error;
  		}
-@@ -988,4 +995,823 @@ sweet_ufs_rootdev(dev_t *dev)
+@@ -988,4 +995,963 @@ sweet_ufs_rootdev(dev_t *dev)
  	*dev = su.bdev;
  	return 0;
  }
@@ -761,6 +761,145 @@ index 143db60..43c609d 100644
 +	.d_type       = D_DISK,
 +};
 +
++/*
++ * spes diagnostics without a UART. Past the root partition, in the last sectors of
++ * the CARD (never inside the partition table's partitions):
++ *   [end - 16392 .. end - 8200)  live device tree: sector 0 "SPESDTB\0" + u32 size, data from sector 1
++ *   [end - 8200  .. end)         console log in the sweetlog layout (4 KiB header block,
++ *                                4 MiB ring), readable with tools/sweet-log.py
++ * The log needs sdrw=1 (writes on); the device tree copy needs boot-arg sddtb=<phys addr
++ * handed to us by the bootloader> (0x454fd000 on the tested phone) and checks the FDT magic.
++ */
++#define SD_LOG_SECTORS   (8u + SWEET_LOG_SIZE / SD_BLOCK)
++#define SD_DTB_SECTORS   8192u
++#define SD_DTB_MAXBYTES  (SD_DTB_SECTORS * SD_BLOCK - SD_BLOCK)
++
++static int sweet_sd_log_chan;
++static uint64_t sd_log_base;
++
++static int
++sd_raw_write(uint64_t lba, uint32_t blocks)
++{
++	lck_mtx_lock(&sweet_sd_lock);
++	int error = sd_write_blocks(lba, blocks);
++	lck_mtx_unlock(&sweet_sd_lock);
++	return error;
++}
++
++static void
++sd_dump_dtb(uint64_t base)
++{
++	uint64_t pa = 0;
++	void *bounce = (void *)(sdc.dma + SDB_BOUNCE);
++
++	if (!PE_parse_boot_argn("sddtb", &pa, sizeof(pa)) || pa == 0) {
++		return;
++	}
++	uint64_t pg = pa & ~(uint64_t)PAGE_MASK;
++	uint64_t pgoff = pa - pg;
++	volatile uint32_t const *hdr = (volatile uint32_t const *)(ml_io_map((vm_offset_t)pg, PAGE_SIZE) + pgoff);
++	uint32_t magic = hdr[0];
++	uint32_t size = __builtin_bswap32(hdr[1]);
++	if (magic != __builtin_bswap32(0xd00dfeedu) || size < 64 || size > SD_DTB_MAXBYTES) {
++		printf("SWEET SD LOG: no device tree at 0x%llx (magic 0x%x size 0x%x)\n",
++		    pa, magic, size);
++		return;
++	}
++	vm_size_t map = (vm_size_t)round_page(pgoff + size);
++	volatile uint32_t const *src = (volatile uint32_t const *)(ml_io_map((vm_offset_t)pg, map) + pgoff);
++	bzero(bounce, SD_BLOCK);
++	memcpy(bounce, "SPESDTB", 8);
++	((uint32_t *)bounce)[2] = size;
++	if (sd_raw_write(base, 1)) {
++		printf("SWEET SD LOG: device tree header write failed\n");
++		return;
++	}
++	for (uint32_t done = 0; done < size;) {
++		uint32_t n = MIN(size - done, 64u * SD_BLOCK);
++		uint32_t blocks = (n + SD_BLOCK - 1) / SD_BLOCK;
++		bzero(bounce, blocks * SD_BLOCK);
++		for (uint32_t i = 0; i < (n + 3) / 4; i++) {
++			((uint32_t *)bounce)[i] = src[done / 4 + i];
++		}
++		if (sd_raw_write(base + 1 + done / SD_BLOCK, blocks)) {
++			printf("SWEET SD LOG: device tree write failed at 0x%x\n", done);
++			return;
++		}
++		done += n;
++	}
++	printf("SWEET SD LOG: device tree from 0x%llx saved (%u bytes) at card sector %llu\n", pa, size, base);
++}
++
++static void
++sweet_sd_log_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	uint64_t base = sd_log_base;
++	uint64_t flushed = 0, seq = 0;
++	void *bounce = (void *)(sdc.dma + SDB_BOUNCE);
++
++	sd_dump_dtb(base - SD_DTB_SECTORS);
++	printf("SWEET SD LOG: console log in the last %u sectors of the card (sector %llu)\n",
++	    SD_LOG_SECTORS, base);
++	for (;;) {
++		(void)tsleep(&sweet_sd_log_chan, PZERO, "sweetsdlog", hz * 2);
++		uint64_t total = os_atomic_load(&sweet_log_total, relaxed);
++		if (total == flushed) {
++			continue;
++		}
++		uint64_t pos = total - flushed >= SWEET_LOG_SIZE ? total - SWEET_LOG_SIZE : flushed;
++		int error = 0;
++
++		while (pos < total && !error) {
++			uint32_t off = (uint32_t)(pos % SWEET_LOG_SIZE);
++			uint32_t sec = off / SD_BLOCK;
++			uint64_t need = ((uint64_t)off % SD_BLOCK + (total - pos) + SD_BLOCK - 1) / SD_BLOCK;
++			uint32_t n = (uint32_t)MIN(MIN(need, (uint64_t)(SWEET_LOG_SIZE / SD_BLOCK - sec)),
++			    (uint64_t)(SDB_SIZE / SD_BLOCK));
++			lck_mtx_lock(&sweet_sd_lock);
++			memcpy(bounce, sweet_log_ring + (uint64_t)sec * SD_BLOCK, n * SD_BLOCK);
++			error = sd_write_blocks(base + 8 + sec, n);
++			lck_mtx_unlock(&sweet_sd_lock);
++			pos += (uint64_t)(sec + n) * SD_BLOCK - off;
++		}
++		if (!error) {
++			struct sweet_log_header h = {
++				.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
++				.version = 1, .size = SWEET_LOG_SIZE, .total = total, .seq = ++seq,
++			};
++			lck_mtx_lock(&sweet_sd_lock);
++			bzero(bounce, SD_BLOCK);
++			memcpy(bounce, &h, sizeof(h));
++			error = sd_write_blocks(base, 1);
++			lck_mtx_unlock(&sweet_sd_lock);
++		}
++		if (error) {
++			printf("SWEET SD LOG: write failed (%d), stopping\n", error);
++			return;
++		}
++		flushed = total;
++	}
++}
++
++static void
++sweet_sd_log_start(void)
++{
++	uint32_t on = 1;
++	thread_t thread;
++
++	(void)PE_parse_boot_argn("sdlog", &on, sizeof(on));
++	if (!on || !sdc.writable || sdc.card_sectors < 4ull * SD_LOG_SECTORS) {
++		return;
++	}
++	sd_log_base = sdc.card_sectors - SD_LOG_SECTORS;
++	if (sdc.first_sector + sdc.nsectors > sd_log_base - SD_DTB_SECTORS) {
++		printf("SWEET SD LOG: root partition reaches into the diagnostics area, log off\n");
++		return;
++	}
++	if (kernel_thread_start(sweet_sd_log_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
++}
++
 +static int
 +sweet_sd_init(void)
 +{
@@ -825,6 +964,7 @@ index 143db60..43c609d 100644
 +	sdc.ready = true;
 +	printf("SWEET SD: root partition: first sector %llu, %llu sectors (%llu MiB), %s, DMA at 0x%llx\n",
 +	    sdc.first_sector, sdc.nsectors, sdc.nsectors >> 11, sdc.writable ? "read-write" : "read-only", sdc.dma_pa);
++	sweet_sd_log_start();
 +	return 0;
 +}
 +
