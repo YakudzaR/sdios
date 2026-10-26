@@ -1,0 +1,29 @@
+name: userland-gpu
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - name: Tools
+        run: brew install meson ninja bison flex
+      - name: Build
+        run: bash userland/build-gpu-ios.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: topaz-gpu-userland
+          path: userland/out/*.dylib
+      - name: Publish to builds-gpu branch
+        run: |
+          rm -rf /tmp/pub && mkdir /tmp/pub && cp userland/out/*.dylib /tmp/pub/
+          cd /tmp/pub && git init -q && git config user.name ci && git config user.email ci@users.noreply.github.com
+          git add . && git commit -qm "userland gpu dylibs"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds-gpu
