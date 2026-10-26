@@ -1,0 +1,40 @@
+spes: set the eGPIO enable bit (12) on pads with the eGPIO-present bit (11), e.g. AVDD GPIO98; clamp raw coordinates
+
+--- a/bsd/dev/sweet_touch.c	2026-10-26 06:22:18.281474064 +0000
++++ b/bsd/dev/sweet_touch.c	2026-10-26 06:22:18.283880191 +0000
+@@ -166,6 +166,14 @@
+ 	}
+ 	cfg &= ~0x3ffu;
+ 	cfg |= (mux << 2) | pull | (drive << 6) | (out ? 0x200u : 0u);
++	if (cfg & 0x800u) {
++		/*
++		 * khaje eGPIO (pinctrl-khaje.c: egpio_present = bit 11, egpio_enable = bit 12):
++		 * such a pad belongs to the application TLMM only while bit 12 is set. ABL leaves it
++		 * clear on GPIO98, so every earlier write reached nothing and the pad read 0.
++		 */
++		cfg |= 0x1000u;
++	}
+ 	touch_wr(tile, off, cfg);
+ }
+ 
+@@ -548,9 +556,8 @@
+ 		unsigned py = ((unsigned)(p[2] & 15u) << 8) | p[3];
+ 		if (st.raw_x != 1349u || st.raw_y != 2999u) {
+ 			/* spes: raw range given by sweettouchrawx/rawy (1079x2399 = panel pixels, no scaling) */
+-			if (px > st.raw_x || py > st.raw_y) {
+-				return EIO;
+-			}
++			px = px > st.raw_x ? st.raw_x : px;
++			py = py > st.raw_y ? st.raw_y : py;
+ 			px = px * 1080u / (st.raw_x + 1u);
+ 			py = py * 2400u / (st.raw_y + 1u);
+ 		} else {
+@@ -678,7 +685,7 @@
+ 	for (unsigned i = 0; i < 4; ++i) {
+ 		touch_wr(t, io, 2u);
+ 		printf("SWEET TOUCH: avdd test: latch=1 -> io=%#x cfg=%#x\n", touch_rd(t, io), touch_rd(t, c));
+-		touch_wr(t, c, cfgs[i]);
++		touch_wr(t, c, cfgs[i] | 0x1000u);
+ 		touch_wait(5);
+ 		printf("SWEET TOUCH: avdd test: cfg %#x written -> cfg=%#x io=%#x\n", cfgs[i], touch_rd(t, c), touch_rd(t, io));
+ 		touch_wr(t, io, 0u);
