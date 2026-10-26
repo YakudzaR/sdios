@@ -24,8 +24,10 @@ HIGH_MEM_SIZE = 0x100000000
 MID_PHYS_BASE = int(__import__("os").environ.get("MIDBASE", "0x80000000"), 16)
 MID_MEM_SIZE = int(__import__("os").environ.get("MIDSIZE", "0x1c0000000"), 16)
 # spes (Redmi Note 11): see build(spes=True)
-SPES_PHYS_BASE = 0x80000000
-SPES_MEM_SIZE = 0x140000000
+# env SPESBASE / SPESSIZE: kernel RAM start/size. The GPU pool (TopazAdreno.cpp) is 0x90000000..0xd0000000 and must NOT be
+# kernel-managed RAM: with gpu=1 use SPESBASE=0xd0000000 SPESSIZE=0xf0000000 (3.75 GiB up to 0x1c0000000).
+SPES_PHYS_BASE = int(os.environ.get("SPESBASE", "0x80000000"), 16)
+SPES_MEM_SIZE = int(os.environ.get("SPESSIZE", "0x140000000"), 16)
 SPES_ECID = 0x5350455300000001  # 'SPES' + 1, synthetic
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
