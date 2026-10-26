@@ -2,16 +2,15 @@ spes: illegal-PA panics print the frame chain (diagnostic for the phystokv panic
 
 --- a/osfmk/arm64/arm_vm_init.c
 +++ b/osfmk/arm64/arm_vm_init.c
-@@ -44,6 +44,8 @@
+@@ -44,6 +44,7 @@
  #include <arm64/sweet_early.h>
  #include <arm/cpu_data_internal.h>
  #include <arm/misc_protos.h>
 +#include <arm/machine_routines.h>
-+#include <libkern/libkern.h>
  #include <pexpert/arm64/boot.h>
  #include <pexpert/device_tree.h>
  
-@@ -367,6 +369,30 @@
+@@ -367,6 +368,30 @@
  SECURITY_READ_ONLY_LATE(static boolean_t)               kva_active = FALSE;
  
  
@@ -42,7 +41,7 @@ spes: illegal-PA panics print the frame chain (diagnostic for the phystokv panic
  vm_map_address_t
  phystokv(pmap_paddr_t pa)
  {
-@@ -377,8 +403,10 @@
+@@ -377,8 +402,10 @@
  		}
  	}
  	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
@@ -55,7 +54,7 @@ spes: illegal-PA panics print the frame chain (diagnostic for the phystokv panic
  	}
  	return pa - gPhysBase + gVirtBase;
  }
-@@ -402,8 +430,10 @@
+@@ -402,8 +429,10 @@
  		*max_len = len;
  	}
  	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
