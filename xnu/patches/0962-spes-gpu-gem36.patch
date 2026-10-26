@@ -1,0 +1,41 @@
+spes: boot-arg gpu_gem36=1: GPU buffers (gemNew) may use RAM above 4 GiB (36-bit pass-through)
+
+--- a/iokit/Kernel/arm/RedwoodGPU.cpp
++++ b/iokit/Kernel/arm/RedwoodGPU.cpp
+@@ -53,6 +53,27 @@
+ /* bsd/dev/redwood_adreno.c ("the GPU kept on"; declared in bsd/sys/redwood_input.h, which is not seen from here) */
+ bool redwood_gpu_ready(void);
+ bool redwood_gpu_identity(void);
++
++/*
++ * Physical-address limit for the memory of a GPU buffer (gemNew). The default keeps it below 4 GiB;
++ * boot-arg gpu_gem36=1 allows the whole 36-bit pass-through range (the SMMU is bypassed and surfaces above
++ * 4 GiB are shared with the GPU already), so the 768 MB below 4 GiB are not the only place for them.
++ */
++static uint64_t
++redwood_gem_mask(void)
++{
++	static int init;
++	static uint64_t mask = 0x00000000fffff000ull;
++
++	if (!init) {
++		uint32_t v = 0;
++		if (PE_parse_boot_argn("gpu_gem36", &v, sizeof(v)) && v != 0) {
++			mask = 0x0000000ffffff000ull;
++		}
++		init = 1;
++	}
++	return mask;
++}
+ uint64_t topaz_gpu_pool_alloc(uint64_t size, void ** va);
+ IOMemoryDescriptor * topaz_gpu_pool_md(uint64_t pa, uint64_t size);
+ bool topaz_gpu_midmem(void);
+@@ -785,7 +806,7 @@
+ 		/* topaz: kernel memory below 4 GiB, contiguous (ADT --midmem gives the kernel such RAM) */
+ 		IOBufferMemoryDescriptor * low = !topaz_gpu_midmem() ? NULL : IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 		    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMemoryPhysicallyContiguous | kIOMapWriteCombineCache,
+-		    (vm_size_t) size, 0x00000000fffff000ull);
++		    (vm_size_t) size, redwood_gem_mask());
+ 		if (low != NULL) {
+ 			IOLockLock(gGPULock);
+ 			b = newBuffer(low, 0, size, request->flags, &request->handle);
