@@ -2,6 +2,11 @@ name: userland-gpu
 
 on:
   workflow_dispatch:
+  push:
+    branches: [spes]
+    paths:
+      - "userland/**"
+      - ".github/workflows/userland-gpu.yml"
 
 permissions:
   contents: write
