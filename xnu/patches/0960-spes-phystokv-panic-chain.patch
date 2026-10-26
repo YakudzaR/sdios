@@ -1,0 +1,70 @@
+spes: illegal-PA panics print the frame chain (diagnostic for the phystokv panic with EAGL)
+
+--- a/osfmk/arm64/arm_vm_init.c
++++ b/osfmk/arm64/arm_vm_init.c
+@@ -44,6 +44,8 @@
+ #include <arm64/sweet_early.h>
+ #include <arm/cpu_data_internal.h>
+ #include <arm/misc_protos.h>
++#include <arm/machine_routines.h>
++#include <libkern/libkern.h>
+ #include <pexpert/arm64/boot.h>
+ #include <pexpert/device_tree.h>
+ 
+@@ -367,6 +369,30 @@
+ SECURITY_READ_ONLY_LATE(static boolean_t)               kva_active = FALSE;
+ 
+ 
++/* spes diagnostic: the frame chain (return addresses, low 48 bits) for the illegal-PA panics */
++static void
++sweet_panic_chain(char *out, size_t n)
++{
++	uintptr_t fp = (uintptr_t)__builtin_frame_address(0);
++	size_t o = 0;
++
++	out[0] = 0;
++	for (int i = 0; i < 12 && o + 24 < n; i++) {
++		uintptr_t rec[2];
++		if (fp < 0xfffffe0000000000ull || (fp & 15) != 0) {
++			break;
++		}
++		if (ml_nofault_copy(fp, (vm_offset_t)rec, 16) != 16) {
++			break;
++		}
++		o += snprintf(out + o, n - o, " %llx", (unsigned long long)(rec[1] & 0xffffffffffffull));
++		if (rec[0] <= fp) {
++			break;
++		}
++		fp = rec[0];
++	}
++}
++
+ vm_map_address_t
+ phystokv(pmap_paddr_t pa)
+ {
+@@ -377,8 +403,10 @@
+ 		}
+ 	}
+ 	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
+-		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", __func__,
+-		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size);
++		char chain[256];
++		sweet_panic_chain(chain, sizeof(chain));
++		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx chain:%s", __func__,
++		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size, chain);
+ 	}
+ 	return pa - gPhysBase + gVirtBase;
+ }
+@@ -402,8 +430,10 @@
+ 		*max_len = len;
+ 	}
+ 	if (__improbable((pa < gPhysBase) || ((pa - gPhysBase) >= real_phys_size))) {
+-		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx", __func__,
+-		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size);
++		char chain[256];
++		sweet_panic_chain(chain, sizeof(chain));
++		panic("%s: illegal PA: 0x%llx; phys base 0x%llx, size 0x%llx chain:%s", __func__,
++		    (unsigned long long)pa, (unsigned long long)gPhysBase, (unsigned long long)real_phys_size, chain);
+ 	}
+ 	return pa - gPhysBase + gVirtBase;
+ }
