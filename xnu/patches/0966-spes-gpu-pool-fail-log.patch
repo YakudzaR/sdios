@@ -1,0 +1,23 @@
+spes: log GPU pool statistics when a pool allocation fails
+
+--- a/iokit/Kernel/arm/TopazAdreno.cpp
++++ b/iokit/Kernel/arm/TopazAdreno.cpp
+@@ -258,6 +258,18 @@
+ 	}
+ 	pa = range_alloc(pool_free, &pool_free_count, size);
+ 	if (pa == 0) {
++		static uint32_t told;
++		if (told++ < 40) {
++			uint64_t total = 0, largest = 0;
++			for (unsigned i = 0; i < pool_free_count; i++) {
++				total += pool_free[i].size;
++				if (pool_free[i].size > largest) {
++					largest = pool_free[i].size;
++				}
++			}
++			IOLog("TopazGPU: pool: no %llu KB (free %llu KB in %u ranges, largest %llu KB)\n", size >> 10, total >> 10,
++			    pool_free_count, largest >> 10);
++		}
+ 		return 0;
+ 	}
+ 	unsigned c = (unsigned)((pa - GPU_POOL_BASE) / GPU_POOL_CHUNK);
