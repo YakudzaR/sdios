@@ -1,0 +1,61 @@
+spes: boot-arg sweetnojetsam=NAME,NAME: processes without a jetsam memory limit (default backboardd)
+
+--- a/bsd/kern/kern_memorystatus.c
++++ b/bsd/kern/kern_memorystatus.c
+@@ -2328,6 +2328,38 @@
+ 	return IOTaskHasEntitlement(task, kInternalJetsamRangeEntitlement);
+ }
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(SWEET)
++/*
++ * Processes without a jetsam memory limit: boot-arg sweetnojetsam (comma separated, default "backboardd").
++ * Settings (Preferences) was killed (ReportMemoryException) opening General > About.
++ */
++static boolean_t
++sweet_nojetsam(const char *name)
++{
++	static char names[128];
++	static int loaded;
++
++	if (!loaded) {
++		if (!PE_parse_boot_argn("sweetnojetsam", names, sizeof(names))) {
++			strlcpy(names, "backboardd", sizeof(names));
++		}
++		loaded = 1;
++	}
++	size_t len = strlen(name);
++	for (const char *w = names; *w;) {
++		const char *e = w;
++		while (*e && *e != ',') {
++			e++;
++		}
++		if ((size_t)(e - w) == len && len != 0 && strncmp(w, name, len) == 0) {
++			return TRUE;
++		}
++		w = *e ? e + 1 : e;
++	}
++	return FALSE;
++}
++#endif
++
+ /*
+  *
+  * Description: Update the jetsam priority and memory limit attributes for a given process.
+@@ -2371,7 +2403,7 @@
+ 	 * topaz: the window server with Mesa (GPU OpenGL ES) needs more than the
+ 	 * iPhone X's limit for backboardd; over it, jetsam kills it in a loop.
+ 	 */
+-	if (update_memlimit && strcmp(p->p_name, "backboardd") == 0) {
++	if (update_memlimit && sweet_nojetsam(p->p_name)) {
+ 		memlimit_active = memlimit_inactive = -1;
+ 		memlimit_active_is_fatal = memlimit_inactive_is_fatal = FALSE;
+ 	}
+@@ -7695,7 +7727,7 @@
+ memorystatus_set_memlimit_properties_internal(proc_t p, memorystatus_memlimit_properties_t *p_entry)
+ {
+ #if defined(ARM64_BOARD_CONFIG_SWEET) || defined(SWEET)
+-	if (strcmp(p->p_name, "backboardd") == 0) {     /* topaz: see memorystatus_update() */
++	if (sweet_nojetsam(p->p_name)) {     /* topaz: see memorystatus_update() */
+ 		p_entry->memlimit_active = p_entry->memlimit_inactive = -1;
+ 		p_entry->memlimit_active_attr = p_entry->memlimit_inactive_attr = 0;
+ 	}
