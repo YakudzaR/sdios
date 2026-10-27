@@ -1,0 +1,18 @@
+spes: sweetbl_level only noted at init, sent at the next panel wake (the early DCS write blanked the screen)
+
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -373,11 +373,9 @@
+ 		 */
+ 		uint32_t fixedLevel = 0;
+ 		if (PE_parse_boot_argn("sweetbl_level", &fixedLevel, sizeof(fixedLevel)) && fixedLevel >= 1 && fixedLevel <= 0x7ff) {
++			/* only noted here: the level goes out when the panel wakes (an early DCS write blanked the screen) */
+ 			fBlLevel = fixedLevel;
+-			if (fBlCall != NULL) {
+-				thread_call_enter(fBlCall);
+-			}
+-			IOLog("SWEET FB: fixed panel level %#x\n", fixedLevel);
++			IOLog("SWEET FB: fixed panel level %#x (sent at the next panel wake)\n", fixedLevel);
+ 		}
+ 		/*
+ 		 * Off unless sweetbl=1: with a backlight service CoreBrightness also
