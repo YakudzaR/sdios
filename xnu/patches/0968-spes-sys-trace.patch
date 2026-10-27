@@ -1,0 +1,91 @@
+spes: boot-arg sweetsys=NAME logs file system information syscalls (statfs, getattrlist, ...) of a process
+
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -44,6 +44,76 @@
+ extern void
+ unix_syscall(struct arm_saved_state * regs, thread_t thread_act, struct proc * proc);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(SWEET)
++/*
++ * SWEET diagnostic: boot-arg sweetsys=NAME[,NAME] logs the file system information calls (statfs, fstatfs,
++ * getfsstat, getattrlist, fgetattrlist, fsctl, ffsctl) of those processes with the path, the volume attributes
++ * asked for and the result (400 lines at most). Settings > General > About crashed on a volume size that
++ * came back empty.
++ */
++static void
++sweet_sys_trace(struct proc *proc, struct uthread *uthread, unsigned short code, int error)
++{
++	static char names[64];
++	static int loaded, lines;
++	bool path_call = false;
++
++	if (!loaded) {
++		if (!PE_parse_boot_argn("sweetsys", names, sizeof(names))) {
++			names[0] = 0;
++		}
++		loaded = 1;
++	}
++	if (names[0] == 0 || lines >= 400) {
++		return;
++	}
++	switch (code) {
++	case 157: case 220: case 242: case 345:
++		path_call = true;
++		break;
++	case 18: case 158: case 228: case 245: case 346: case 347: case 461:
++		break;
++	default:
++		return;
++	}
++	size_t len = strnlen(proc->p_comm, MAXCOMLEN);
++	bool match = false;
++	for (const char *w = names; *w;) {
++		const char *e = w;
++		while (*e && *e != ',') {
++			e++;
++		}
++		if ((size_t)(e - w) == len && len != 0 && strncmp(w, proc->p_comm, len) == 0) {
++			match = true;
++			break;
++		}
++		w = *e ? e + 1 : e;
++	}
++	if (!match) {
++		return;
++	}
++	lines++;
++	char path[96] = "";
++	if (path_call) {
++		size_t done = 0;
++		if (copyinstr((user_addr_t)uthread->uu_arg[0], path, sizeof(path), &done) != 0) {
++			strlcpy(path, "?", sizeof(path));
++		}
++	}
++	uint32_t attrs[6] = { 0, 0, 0, 0, 0, 0 };
++	if (code == 220 || code == 228) {
++		/* struct attrlist: u_short bitmapcount, u_int16_t reserved, then commonattr, volattr, dirattr, fileattr, forkattr */
++		uint32_t raw[6] = { 0, 0, 0, 0, 0, 0 };
++		if (copyin((user_addr_t)uthread->uu_arg[1], raw, sizeof(raw)) == 0) {
++			memcpy(attrs, raw, sizeof(attrs));
++		}
++	}
++	printf("SWEET SYS: %s[%d] code %u path '%s' attr[common %#x vol %#x dir %#x file %#x] -> error %d rval %d\n",
++	    proc->p_comm, proc_getpid(proc), code, path, attrs[1], attrs[2], attrs[3], attrs[4], error,
++	    (int)uthread->uu_rval[0]);
++}
++#endif /* SWEET */
++
+ static int      arm_get_syscall_args(uthread_t, struct arm_saved_state *, const struct sysent *);
+ static int      arm_get_u32_syscall_args(uthread_t, arm_saved_state32_t *, const struct sysent *);
+ static void     arm_prepare_u32_syscall_return(const struct sysent *, arm_saved_state_t *, uthread_t, int);
+@@ -180,6 +250,9 @@
+ 	AUDIT_SYSCALL_ENTER(code, proc, uthread);
+ 	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
+ 	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
++#if defined(ARM64_BOARD_CONFIG_SWEET) || defined(SWEET)
++	sweet_sys_trace(proc, uthread, code, error);
++#endif
+ 
+ #if CONFIG_MACF
+ skip_syscall:
