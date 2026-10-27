@@ -1,0 +1,23 @@
+spes: boot-arg sweetbl_level=N, a fixed panel brightness (DCS 0x51) without the backlight service
+
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -368,6 +368,18 @@
+ 		IOLog("SWEET FB: DSI0 ctrl %#x, brightness via DCS 0x51\n", *(volatile uint32_t *)(fDsi + 0x004));
+ 		setProperty("IOMFBBrightnessLevel", (unsigned long long)(200u << 16), 32);
+ 		/*
++		 * boot-arg sweetbl_level=N (1..2047, the panel's DBV): a fixed brightness sent at boot, without the
++		 * backlight service (whose digital dimming slows the UI down). 0x133 is the dim stock level.
++		 */
++		uint32_t fixedLevel = 0;
++		if (PE_parse_boot_argn("sweetbl_level", &fixedLevel, sizeof(fixedLevel)) && fixedLevel >= 1 && fixedLevel <= 0x7ff) {
++			fBlLevel = fixedLevel;
++			if (fBlCall != NULL) {
++				thread_call_enter(fBlCall);
++			}
++			IOLog("SWEET FB: fixed panel level %#x\n", fixedLevel);
++		}
++		/*
+ 		 * Off unless sweetbl=1: with a backlight service CoreBrightness also
+ 		 * runs digital dimming, a colour filter over every frame, which the
+ 		 * CPU renderer cannot afford (the UI dropped to under 1 fps).
