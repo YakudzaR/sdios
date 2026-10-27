@@ -939,6 +939,8 @@ sweet_sd_init(void)
 	sweet_sd_log_start();
 	/* spes: the topaz touch driver (sweet_touch.c) never started on this path; boot-args sweettouch* select pins and mode. */
 	sweet_touch_init();
+	/* spes: the polled power/volume keys (sweet_keys.c, PM6125 PON over SPMI, read-only) started from the UFS path only; boot-arg sweetkeys=0 turns them off. */
+	sweet_keys_init();
 	return 0;
 }
 

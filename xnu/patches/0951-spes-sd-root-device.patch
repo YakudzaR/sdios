@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
-index 143db60..909d33c 100644
+index 143db60..6402140 100644
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
 @@ -976,11 +976,18 @@ sweet_log_start(void)
@@ -21,7 +21,7 @@ index 143db60..909d33c 100644
  		if (error) {
  			return error;
  		}
-@@ -988,4 +995,965 @@ sweet_ufs_rootdev(dev_t *dev)
+@@ -988,4 +995,967 @@ sweet_ufs_rootdev(dev_t *dev)
  	*dev = su.bdev;
  	return 0;
  }
@@ -967,6 +967,8 @@ index 143db60..909d33c 100644
 +	sweet_sd_log_start();
 +	/* spes: the topaz touch driver (sweet_touch.c) never started on this path; boot-args sweettouch* select pins and mode. */
 +	sweet_touch_init();
++	/* spes: the polled power/volume keys (sweet_keys.c, PM6125 PON over SPMI, read-only) started from the UFS path only; boot-arg sweetkeys=0 turns them off. */
++	sweet_keys_init();
 +	return 0;
 +}
 +
