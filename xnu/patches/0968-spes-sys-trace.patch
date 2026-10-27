@@ -1,8 +1,8 @@
-spes: boot-arg sweetsys=NAME logs file system information syscalls (statfs, getattrlist, ...) of a process
+spes: boot-arg sweetsys=NAME logs file system information syscalls (statfs, getattrlist volume attributes, ...) of a process, with the returned values
 
 --- a/bsd/dev/arm/systemcalls.c
 +++ b/bsd/dev/arm/systemcalls.c
-@@ -44,6 +44,76 @@
+@@ -44,6 +44,112 @@
  extern void
  unix_syscall(struct arm_saved_state * regs, thread_t thread_act, struct proc * proc);
  
@@ -10,7 +10,7 @@ spes: boot-arg sweetsys=NAME logs file system information syscalls (statfs, geta
 +/*
 + * SWEET diagnostic: boot-arg sweetsys=NAME[,NAME] logs the file system information calls (statfs, fstatfs,
 + * getfsstat, getattrlist, fgetattrlist, fsctl, ffsctl) of those processes with the path, the volume attributes
-+ * asked for and the result (400 lines at most). Settings > General > About crashed on a volume size that
++ * asked for and the result (1500 lines at most). Settings > General > About crashed on a volume size that
 + * came back empty.
 + */
 +static void
@@ -26,7 +26,7 @@ spes: boot-arg sweetsys=NAME logs file system information syscalls (statfs, geta
 +		}
 +		loaded = 1;
 +	}
-+	if (names[0] == 0 || lines >= 400) {
++	if (names[0] == 0 || lines >= 1500) {
 +		return;
 +	}
 +	switch (code) {
@@ -54,6 +54,20 @@ spes: boot-arg sweetsys=NAME logs file system information syscalls (statfs, geta
 +	if (!match) {
 +		return;
 +	}
++	static int fstatfs_lines;
++	uint32_t volattr = 0;
++	if (code == 220 || code == 228) {
++		uint32_t raw0[3] = { 0, 0, 0 };
++		if (copyin((user_addr_t)uthread->uu_arg[1], raw0, sizeof(raw0)) == 0) {
++			volattr = raw0[2];
++		}
++		if (volattr == 0) {
++			return;         /* (file attribute calls are not the point) */
++		}
++	}
++	if (code == 346 && error == 0 && fstatfs_lines++ >= 20) {
++		return;
++	}
 +	lines++;
 +	char path[96] = "";
 +	if (path_call) {
@@ -73,13 +87,35 @@ spes: boot-arg sweetsys=NAME logs file system information syscalls (statfs, geta
 +	printf("SWEET SYS: %s[%d] code %u path '%s' attr[common %#x vol %#x dir %#x file %#x] -> error %d rval %d\n",
 +	    proc->p_comm, proc_getpid(proc), code, path, attrs[1], attrs[2], attrs[3], attrs[4], error,
 +	    (int)uthread->uu_rval[0]);
++	if (error == 0 && (code == 345 || code == 346 || code == 157 || code == 158)) {
++		/* struct statfs: u32 f_bsize, i32 f_iosize, u64 f_blocks, u64 f_bfree, u64 f_bavail */
++		uint8_t sb[32];
++		if (copyin((user_addr_t)uthread->uu_arg[1], sb, sizeof(sb)) == 0) {
++			uint32_t bsize, iosize;
++			uint64_t blocks, bfree, bavail;
++			memcpy(&bsize, sb, 4);
++			memcpy(&iosize, sb + 4, 4);
++			memcpy(&blocks, sb + 8, 8);
++			memcpy(&bfree, sb + 16, 8);
++			memcpy(&bavail, sb + 24, 8);
++			printf("SWEET SYS:   statfs bsize %u iosize %u blocks %llu bfree %llu bavail %llu\n", bsize, iosize,
++			    (unsigned long long)blocks, (unsigned long long)bfree, (unsigned long long)bavail);
++		}
++	} else if (error == 0 && (code == 220 || code == 228) && volattr != 0) {
++		/* attribute buffer: u32 length, then the returned attributes */
++		uint32_t out[8] = { 0, 0, 0, 0, 0, 0, 0, 0 };
++		if (copyin((user_addr_t)uthread->uu_arg[2], out, sizeof(out)) == 0) {
++			printf("SWEET SYS:   attrbuf len %u: %08x %08x %08x %08x %08x %08x %08x\n", out[0], out[1], out[2], out[3],
++			    out[4], out[5], out[6], out[7]);
++		}
++	}
 +}
 +#endif /* SWEET */
 +
  static int      arm_get_syscall_args(uthread_t, struct arm_saved_state *, const struct sysent *);
  static int      arm_get_u32_syscall_args(uthread_t, arm_saved_state32_t *, const struct sysent *);
  static void     arm_prepare_u32_syscall_return(const struct sysent *, arm_saved_state_t *, uthread_t, int);
-@@ -180,6 +250,9 @@
+@@ -180,6 +286,9 @@
  	AUDIT_SYSCALL_ENTER(code, proc, uthread);
  	error = (*(callp->sy_call))(proc, &uthread->uu_arg[0], &(uthread->uu_rval[0]));
  	AUDIT_SYSCALL_EXIT(code, proc, uthread, error);
