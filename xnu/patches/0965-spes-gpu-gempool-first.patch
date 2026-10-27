@@ -1,0 +1,56 @@
+spes: boot-arg gpu_gempool=1: GPU buffers of 1 MB+ come from the GPU pool first (contiguous-RAM search fails after an hour)
+
+--- a/iokit/Kernel/arm/RedwoodGPU.cpp
++++ b/iokit/Kernel/arm/RedwoodGPU.cpp
+@@ -59,6 +59,25 @@
+  * boot-arg gpu_gem36=1 allows the whole 36-bit pass-through range (the SMMU is bypassed and surfaces above
+  * 4 GiB are shared with the GPU already), so the 768 MB below 4 GiB are not the only place for them.
+  */
++/*
++ * boot-arg gpu_gempool=1: buffers of 1 MB and more (gemNew) come from the GPU pool first, RAM second. After an hour
++ * of use the contiguous-RAM search (vm_page_find_contiguous, 12 MB render targets) failed over and over, each time
++ * scanning all of RAM with hundreds of yields; the pool does not fragment.
++ */
++static bool
++redwood_gem_poolfirst(void)
++{
++	static int init;
++	static bool on;
++
++	if (!init) {
++		uint32_t v = 0;
++		on = PE_parse_boot_argn("gpu_gempool", &v, sizeof(v)) && v != 0;
++		init = 1;
++	}
++	return on;
++}
++
+ static uint64_t
+ redwood_gem_mask(void)
+ {
+@@ -804,7 +823,12 @@
+ 	/* (the memory comes zeroed, and making it write-combined pushes the zeroes out of the cache) */
+ 	if (redwood_gpu_identity()) {
+ 		/* topaz: kernel memory below 4 GiB, contiguous (ADT --midmem gives the kernel such RAM) */
+-		IOBufferMemoryDescriptor * low = !topaz_gpu_midmem() ? NULL : IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
++		void * va = NULL;
++		uint64_t pa = 0;
++		if (topaz_gpu_midmem() && redwood_gem_poolfirst() && size >= (1ull << 20)) {
++			pa = topaz_gpu_pool_alloc(size, &va);
++		}
++		IOBufferMemoryDescriptor * low = (!topaz_gpu_midmem() || pa != 0) ? NULL : IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 		    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMemoryPhysicallyContiguous | kIOMapWriteCombineCache,
+ 		    (vm_size_t) size, redwood_gem_mask());
+ 		if (low != NULL) {
+@@ -823,8 +847,9 @@
+ 			return kIOReturnSuccess;
+ 		}
+ 		/* else: from the GPU's pool below 4 GiB (contiguous, write-combined) */
+-		void * va = NULL;
+-		uint64_t pa = topaz_gpu_pool_alloc(size, &va);
++		if (pa == 0) {
++			pa = topaz_gpu_pool_alloc(size, &va);
++		}
+ 
+ 		if (pa == 0) {
+ 			IOLog("RedwoodGPU: the GPU pool has no %llu bytes left\n", size);
