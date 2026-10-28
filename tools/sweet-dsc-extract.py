@@ -9,7 +9,7 @@ names, the file gets meta.txt (segments and sections) and one .bin per segment (
 import glob, io, os, struct, subprocess, sys, tarfile, tempfile
 
 def main():
-    part, out, names = sys.argv[1], sys.argv[2], sys.argv[3:]
+    part, out, names = sys.argv[1], sys.argv[2], sys.argv[3:]  # a name starting with ? only lists images containing that text
     mnt = tempfile.mkdtemp()
     subprocess.run(["mount", "-t", "hfsplus", "-o", "ro,force", part, mnt], check=True)
     try:
@@ -51,8 +51,11 @@ def main():
             for (a, mt, ino, po, pad) in imgs:
                 fh.seek(po)
                 p = fh.read(300).split(b"\0")[0].decode(errors="replace")
-                if any(p.endswith(n) for n in names):
+                if any(p.endswith(n) for n in names if not n.startswith("?")):
                     found.append((a, p))
+                for n in names:
+                    if n.startswith("?") and n[1:].lower() in p.lower():
+                        print("image", p, file=sys.stderr)
         with tarfile.open(out, "w:gz") as tf:
             def add(name, data):
                 ti = tarfile.TarInfo(name); ti.size = len(data)
