@@ -1,0 +1,175 @@
+spes: sweetsys=NAME also logs the exit of the process (status, reason, last 64 system calls, user backtrace) and signals sent to it
+
+--- a/bsd/dev/arm/systemcalls.c
++++ b/bsd/dev/arm/systemcalls.c
+@@ -51,20 +51,81 @@
+  * asked for and the result (1500 lines at most). Settings > General > About crashed on a volume size that
+  * came back empty.
+  */
++static char sweet_sys_names[64];
++static int sweet_sys_loaded;
++
++/* true if the process name is in boot-arg sweetsys=NAME[,NAME] */
++bool sweet_sys_match(const char *comm);
++bool
++sweet_sys_match(const char *comm)
++{
++	if (!sweet_sys_loaded) {
++		if (!PE_parse_boot_argn("sweetsys", sweet_sys_names, sizeof(sweet_sys_names))) {
++			sweet_sys_names[0] = 0;
++		}
++		sweet_sys_loaded = 1;
++	}
++	if (sweet_sys_names[0] == 0) {
++		return false;
++	}
++	size_t len = strnlen(comm, MAXCOMLEN);
++	for (const char *w = sweet_sys_names; *w;) {
++		const char *e = w;
++		while (*e && *e != ',') {
++			e++;
++		}
++		if ((size_t)(e - w) == len && len != 0 && strncmp(w, comm, len) == 0) {
++			return true;
++		}
++		w = *e ? e + 1 : e;
++	}
++	return false;
++}
++
++/* The last 64 system calls of the traced process, dumped when it exits. */
++#define SWEET_RING 64
++static struct { uint16_t code; int16_t err; } sweet_ring[SWEET_RING];
++static unsigned sweet_ring_n;
++static int sweet_ring_pid;
++
++void sweet_sys_ring_dump(struct proc *proc);
++void
++sweet_sys_ring_dump(struct proc *proc)
++{
++	char line[200];
++	unsigned n = sweet_ring_n < SWEET_RING ? sweet_ring_n : SWEET_RING;
++	if (sweet_ring_pid != proc_getpid(proc)) {
++		return;
++	}
++	printf("SWEET EXIT: last %u system calls of %s[%d] (code/error), oldest first:\n", n, proc->p_comm, proc_getpid(proc));
++	int l = 0;
++	for (unsigned i = 0; i < n; i++) {
++		unsigned k = (sweet_ring_n - n + i) % SWEET_RING;
++		l += snprintf(line + l, sizeof(line) - l, " %u/%d", sweet_ring[k].code, sweet_ring[k].err);
++		if (l > (int)sizeof(line) - 24 || i == n - 1) {
++			printf("SWEET EXIT:%s\n", line);
++			l = 0;
++		}
++	}
++}
++
+ static void
+ sweet_sys_trace(struct proc *proc, struct uthread *uthread, unsigned short code, int error)
+ {
+-	static char names[64];
+-	static int loaded, lines;
++	static int lines;
+ 	bool path_call = false;
+ 
+-	if (!loaded) {
+-		if (!PE_parse_boot_argn("sweetsys", names, sizeof(names))) {
+-			names[0] = 0;
+-		}
+-		loaded = 1;
++	if (!sweet_sys_match(proc->p_comm)) {
++		return;
+ 	}
+-	if (names[0] == 0 || lines >= 1500) {
++	if (sweet_ring_pid != proc_getpid(proc)) {
++		sweet_ring_pid = proc_getpid(proc);
++		sweet_ring_n = 0;
++	}
++	sweet_ring[sweet_ring_n % SWEET_RING].code = code;
++	sweet_ring[sweet_ring_n % SWEET_RING].err = (int16_t)error;
++	sweet_ring_n++;
++	if (lines >= 1500) {
+ 		return;
+ 	}
+ 	switch (code) {
+@@ -76,22 +137,6 @@
+ 	default:
+ 		return;
+ 	}
+-	size_t len = strnlen(proc->p_comm, MAXCOMLEN);
+-	bool match = false;
+-	for (const char *w = names; *w;) {
+-		const char *e = w;
+-		while (*e && *e != ',') {
+-			e++;
+-		}
+-		if ((size_t)(e - w) == len && len != 0 && strncmp(w, proc->p_comm, len) == 0) {
+-			match = true;
+-			break;
+-		}
+-		w = *e ? e + 1 : e;
+-	}
+-	if (!match) {
+-		return;
+-	}
+ 	static int fstatfs_lines;
+ 	uint32_t volattr = 0;
+ 	if (code == 220 || code == 228) {
+--- a/bsd/kern/kern_exit.c
++++ b/bsd/kern/kern_exit.c
+@@ -1849,6 +1849,28 @@
+ 		proc_handle_critical_exit(p, rv);
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	{
++		extern bool sweet_sys_match(const char *);
++		extern void sweet_sys_ring_dump(struct proc *);
++		extern void sweet_crash_log(const char *, int, int, uint64_t, uint64_t);
++		if (sweet_sys_match(p->p_comm)) {
++			printf("SWEET EXIT: %s[%d] rv %#x (%s %d) in syscall %u, current %s[%d]\n", p->p_comm, proc_getpid(p), rv,
++			    WIFSIGNALED(rv) ? "signal" : "status", WIFSIGNALED(rv) ? WTERMSIG(rv) : WEXITSTATUS(rv),
++			    (unsigned)ut->syscall_code, current_proc()->p_comm, proc_getpid(current_proc()));
++			if (PROC_HAS_EXITREASON(p)) {
++				char *d = exit_reason_get_string_desc(p->p_exit_reason);
++				printf("SWEET EXIT: reason ns %u code 0x%llx: %s\n", p->p_exit_reason->osr_namespace,
++				    p->p_exit_reason->osr_code, d != NULL ? d : "(none)");
++			}
++			sweet_sys_ring_dump(p);
++			if (p == current_proc() && !WIFSIGNALED(rv)) {
++				sweet_crash_log(p->p_comm, proc_getpid(p), 0, 0, 0);
++			}
++		}
++	}
++#endif
++
+ 	/*
+ 	 * Generate a corefile/crashlog if:
+ 	 *      The process doesn't have an exit reason that indicates no crash report should be created
+--- a/bsd/kern/kern_sig.c
++++ b/bsd/kern/kern_sig.c
+@@ -2049,6 +2049,24 @@
+ 		panic("psignal: bad signal number %d", signum);
+ 	}
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	if (p != PROC_NULL) {
++		extern bool sweet_sys_match(const char *);
++		static int sig_lines;
++		if (sig_lines < 150 && signum != SIGCHLD && sweet_sys_match(p->p_comm)) {
++			sig_lines++;
++			printf("SWEET SIG: %d to %s[%d] from %s[%d]%s\n", signum, p->p_comm, proc_getpid(p),
++			    current_proc()->p_comm, proc_getpid(current_proc()),
++			    signal_reason != NULL ? " (with reason)" : "");
++			if (signal_reason != NULL) {
++				char *d = exit_reason_get_string_desc(signal_reason);
++				printf("SWEET SIG:   reason ns %u code 0x%llx: %s\n", signal_reason->osr_namespace,
++				    signal_reason->osr_code, d != NULL ? d : "(none)");
++			}
++		}
++	}
++#endif
++
+ 	mask = sigmask(signum);
+ 	prop = sigprop[signum];
+ 
