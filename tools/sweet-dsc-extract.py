@@ -51,7 +51,7 @@ def main():
             for (a, mt, ino, po, pad) in imgs:
                 fh.seek(po)
                 p = fh.read(300).split(b"\0")[0].decode(errors="replace")
-                if any(p.endswith(n) for n in names if not n.startswith("?")):
+                if any(p.endswith(n) for n in names if n[0] not in "?@"):
                     found.append((a, p))
                 for n in names:
                     if n.startswith("?") and n[1:].lower() in p.lower():
@@ -60,6 +60,11 @@ def main():
             def add(name, data):
                 ti = tarfile.TarInfo(name); ti.size = len(data)
                 tf.addfile(ti, io.BytesIO(data))
+            for n in names:
+                if n.startswith("@"):
+                    st, sz = n[1:].split(":")
+                    add("range_%x.bin" % int(st, 16), read(int(st, 16), int(sz, 16)))
+                    print("range", st, sz, file=sys.stderr)
             for a, p in found:
                 tag = p.strip("/").replace("/", "_")
                 hdr = read(a, 0x4000)
