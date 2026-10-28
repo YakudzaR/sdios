@@ -20,7 +20,9 @@ jobs:
           ref: ${{ github.ref }}
       - name: Build
         run: |
+          set -o pipefail
           mkdir -p userland/fix/out
+          (
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           CC=$(xcrun --sdk iphoneos -f clang)
           "$CC" -target arm64-apple-ios16.0 -isysroot "$SDK" -O2 -fobjc-arc -dynamiclib \
@@ -28,13 +30,16 @@ jobs:
             -o userland/fix/out/libtopaz-fix.dylib userland/fix/topaz_fix.m
           codesign --force -s - userland/fix/out/libtopaz-fix.dylib
           file userland/fix/out/libtopaz-fix.dylib
+          ) 2>&1 | tee userland/fix/out/build.log
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: topaz-fix
           path: userland/fix/out/*.dylib
       - name: Publish to the builds-fix branch
+        if: always()
         run: |
-          rm -rf /tmp/pub && mkdir /tmp/pub && cp userland/fix/out/*.dylib /tmp/pub/
+          rm -rf /tmp/pub && mkdir /tmp/pub && cp userland/fix/out/* /tmp/pub/
           cd /tmp/pub && git init -q && git config user.name ci && git config user.email ci@users.noreply.github.com
           git add . && git commit -qm "userland fix dylib"
           git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds-fix
