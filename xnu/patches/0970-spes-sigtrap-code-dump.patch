@@ -1,0 +1,59 @@
+spes: SIGTRAP crash report also prints x0-x28 and the machine code around the trapping pc and the caller
+
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -835,6 +835,41 @@
+ void sweet_crash_log(const char *name, int pid, int sig, uint64_t code, uint64_t subcode);
+ static void sweet_crash_strings(const char *name);
+ 
++/*
++ * SWEET: for a SIGTRAP (Swift runtime trap, brk #1) print x0-x28 and the machine code around the trapping
++ * pc and the caller's return address, so it can be disassembled off the device.
++ */
++static void
++sweet_crash_dump_words(const char *name, const char *what, uint64_t start, size_t bytes)
++{
++	uint32_t w[8];
++	for (size_t off = 0; off < bytes; off += sizeof(w)) {
++		if (copyin((user_addr_t)(start + off), w, sizeof(w)) != 0) {
++			break;
++		}
++		printf("CRASH %s %s 0x%llx: %08x %08x %08x %08x %08x %08x %08x %08x\n", name, what,
++		    (unsigned long long)(start + off), w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
++	}
++}
++
++static void
++sweet_crash_code(const char *name, arm_saved_state_t *ss, uint64_t fp)
++{
++	uint64_t pc = get_saved_state_pc(ss), lr = get_saved_state_lr(ss);
++	for (int i = 0; i < 29; i += 4) {
++		printf("CRASH %s x%d 0x%llx 0x%llx 0x%llx 0x%llx\n", name, i,
++		    (unsigned long long)get_saved_state_reg(ss, i),
++		    (unsigned long long)(i + 1 < 29 ? get_saved_state_reg(ss, i + 1) : 0),
++		    (unsigned long long)(i + 2 < 29 ? get_saved_state_reg(ss, i + 2) : 0),
++		    (unsigned long long)(i + 3 < 29 ? get_saved_state_reg(ss, i + 3) : 0));
++	}
++	sweet_crash_dump_words(name, "code", (lr - 0x80) & ~3ull, (pc + 0x40) - ((lr - 0x80) & ~3ull));
++	uint64_t frame[2];
++	if (fp != 0 && (fp & 7) == 0 && copyin((user_addr_t)fp, frame, sizeof(frame)) == 0 && frame[1] != 0) {
++		sweet_crash_dump_words(name, "caller", (frame[1] - 0x80) & ~3ull, 0xc0);
++	}
++}
++
+ void
+ sweet_crash_log(const char *name, int pid, int sig, uint64_t code, uint64_t subcode)
+ {
+@@ -895,6 +930,12 @@
+ 	if (sig == 6 || sig == 5) {
+ 		sweet_crash_strings(name);
+ 	}
++	if (sig == 5) {
++		static int dumps;
++		if (dumps++ < 6) {
++			sweet_crash_code(name, ss, fp);
++		}
++	}
+ }
+ 
+ /*
