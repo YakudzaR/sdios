@@ -25,7 +25,7 @@ jobs:
           (
           SDK=$(xcrun --sdk iphoneos --show-sdk-path)
           CC=$(xcrun --sdk iphoneos -f clang)
-          "$CC" -target arm64-apple-ios16.0 -isysroot "$SDK" -O2 -fobjc-arc -dynamiclib \
+          "$CC" -target arm64-apple-ios16.0 -isysroot "$SDK" -O2 -fno-objc-arc -dynamiclib \
             -install_name /topaz/lib/libtopaz-fix.dylib -framework Foundation \
             -o userland/fix/out/libtopaz-fix.dylib userland/fix/topaz_fix.m
           codesign --force -s - userland/fix/out/libtopaz-fix.dylib
