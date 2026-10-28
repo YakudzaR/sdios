@@ -31,7 +31,7 @@ def main():
                 moff, mcnt = struct.unpack_from("<II", h, 0x10)
                 fh.seek(moff)
                 for i in range(mcnt):
-                    a, s, o, _, _, _ = struct.unpack("<QQQIII", fh.read(32))
+                    a, s, o, _, _ = struct.unpack("<QQQII", fh.read(32))
                     maps.append((f, a, s, o))
                 if main_file is None:
                     main_file = f
