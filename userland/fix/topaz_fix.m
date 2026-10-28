@@ -5,12 +5,14 @@
  * Settings > General > About and iPhone Storage trap in PodcastsUI, which force-unwraps
  * [[MPMediaLibrary defaultMediaLibrary] databasePath]. On this device that comes back nil (the media
  * library's resource manager has no path), so the app dies. This hands back the media library's
- * well-known path when MediaPlayer has none, and logs what it saw on stderr.
+ * well-known path when MediaPlayer has none, and logs what it saw on stderr. The cause is that
+ * IPHONE_SHARED_RESOURCES_DIRECTORY is not set in the process; the constructor sets it.
  */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <unistd.h>
 
 static IMP orig_dbpath, orig_default;
@@ -57,6 +59,15 @@ static void *watch(void *unused)
 
 __attribute__((constructor)) static void topaz_fix_init(void)
 {
+	/*
+	 * The media library (MusicLibrary.framework, ML3MusicLibraryResourcesManager) takes its base path from
+	 * getenv("IPHONE_SHARED_RESOURCES_DIRECTORY") + "/Media". Real iOS sets it for every app; here nothing does,
+	 * so the path (and databasePath) is nil. Set it before anything asks.
+	 */
+	if (getenv("IPHONE_SHARED_RESOURCES_DIRECTORY") == NULL) {
+		setenv("IPHONE_SHARED_RESOURCES_DIRECTORY", "/var/mobile", 0);
+		fprintf(stderr, "topaz-fix: IPHONE_SHARED_RESOURCES_DIRECTORY was not set, now /var/mobile\n");
+	}
 	pthread_t t;
 	if (pthread_create(&t, NULL, watch, NULL) == 0) {
 		pthread_detach(t);
