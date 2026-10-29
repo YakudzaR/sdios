@@ -1,0 +1,19 @@
+spes: grant the PRIV_NET_* privileges (10000..10099) so mDNSResponder & co can use the network (DNS never left the phone: privilege 10001 denied)
+
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -396,6 +396,14 @@
+ 	if (priv == PRIV_WORK_INTERVAL) {
+ 		return 0;
+ 	}
++	/*
++	 * Wi-Fi (spes/topaz): the networking daemons need the PRIV_NET_* group (10000..10099):
++	 * mDNSResponder, nsurlsessiond, trustd, geod, dasd ask for PRIV_NET_PRIVILEGED_SOCKET_DELEGATE
++	 * (10001) and without it no DNS query ever leaves the phone.
++	 */
++	if (priv >= 10000 && priv < 10100) {
++		return 0;
++	}
+ 	char name[20];
+ 	proc_selfname(name, sizeof(name));
+ 	for (int i = 0; i < sweet_priv_logged_count; i++) {
