@@ -11,3 +11,5 @@ __pycache__/
 userland/build-mesa/
 userland/build-gpu/
 userland/out/
+
+.claude/handoff/
