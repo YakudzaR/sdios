@@ -26,7 +26,7 @@ As of **2026-10-20** the phone boots to the **iOS home screen** on the four Cort
 | Display | Kernel IOSurface (`SweetSurface`) + IOMobileFramebuffer (`AppleCLCD`); the MDP scans iOS surfaces directly from contiguous RAM below 4 GiB, double-buffered, with real cache maintenance (the Apple SoC config made it a no-op). Presented to iOS as an iPhone X panel (1125×2436 canvas centred on the 1080×2400 panel) |
 | GUI | backboardd, SpringBoard, lock screen, home screen, Settings and other apps |
 | Touch and keys | FocalTech FT5452 touch on QUP0 SE2 (patch 0087 fixed the clock that hung the phone), power and volume keys |
-| Wi-Fi | `TopazModem` (patches 0113–0130): modem PAS boot through TrustZone from `modem_a`, GLINK/QRTR, pd-mapper/tftp/rmtfs, WLFW, copy engines, HTC/WMI/HTT, scan, association, WPA2-PSK 4-way handshake in the kernel, Ethernet data path. iOS sees it through `wifid` |
+| Wi-Fi | `TopazModem` (patches 0113–0130): modem PAS boot through TrustZone from `modem_a`, GLINK/QRTR, pd-mapper/tftp/rmtfs, WLFW, copy engines, HTC/WMI/HTT, scan, association, WPA2-PSK 4-way handshake in the kernel, Ethernet data path. iOS sees it through `wifid` On spes the modem firmware and modem data are read from a raw modem pack at the end of the SD card (`tools/spes-modem-pack.py`, patch 0971); boot-args `modem=1 wifi=1 modem_pool=0x8f000000`, ADT with `mkadt.py --wlan`, PRIV_NET_* granted by patch 0972. |
 | Battery | Gauge and charger state (patch 0091) |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
 
