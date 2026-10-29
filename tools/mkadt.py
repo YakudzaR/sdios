@@ -197,8 +197,8 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, spes
         # the kernel's AppleCLCD matches the compatible string.
         # launchd starts wifid only when the device tree has a "wlan" node
         # (com.apple.wifid _LimitLoadToDeviceTree = wlan, marconi-wifi)
-        # (not on spes: no WLAN/modem bring-up there yet)
-        *([] if spes else [node('wlan', [
+        # (spes: only with --wlan, together with the boot-args modem=1 wifi=1 and the SD modem pack)
+        *([] if (spes and '--wlan' not in sys.argv) else [node('wlan', [
             ph(),
             ('device_type', cstr('wlan')),
             ('compatible', cstr('topaz,wcn3988')),
