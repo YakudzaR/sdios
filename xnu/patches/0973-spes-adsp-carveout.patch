@@ -1,0 +1,13 @@
+spes: the ADSP carveout is 0x2e00000 bytes (pil_adsp_region of the spes device tree), the firmware spans all of it
+
+--- a/iokit/Kernel/arm/TopazAudio.cpp
++++ b/iokit/Kernel/arm/TopazAudio.cpp
+@@ -37,7 +37,7 @@
+ #define ADSP_PID            2                   /* SMEM host / SMP2P / GLINK remote pid */
+ #define ADSP_PAS_ID         1
+ #define ADSP_CARVE_PA       0x53800000u         /* DT pil_adsp_region */
+-#define ADSP_CARVE_SIZE     0x02300000u
++#define ADSP_CARVE_SIZE     0x02e00000u         /* spes DT: pil_adsp_region 0x53800000 + 0x2e00000 (topaz: 0x2300000) */
+ #define ITEM_SMP2P_OUT      429                 /* apps -> adsp (DT qcom,smem = <443 429>: in, out) */
+ #define ITEM_SMP2P_IN       443                 /* adsp -> apps */
+ #define ITEM_ADSP_CRASH     423
