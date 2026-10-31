@@ -71,6 +71,18 @@ def d22ap_product(path=D22AP_ADT):
             return [(k, v) for k, f, v in c.props if not f and k not in ('name', 'AAPL,phandle')]
     raise SystemExit(f'{path}: no /product node')
 
+def d22ap_product_child(name, path=D22AP_ADT):
+    """Properties of one child of /product in the real D22AP tree (e.g. 'camera')."""
+    if not os.path.exists(path):
+        return None
+    root, _ = adt.parse(open(path, 'rb').read())
+    for c in root.children:
+        if dict((k, v) for k, f, v in c.props).get('name') == b'product\0':
+            for cc in c.children:
+                if dict((k, v) for k, f, v in cc.props).get('name') == name.encode() + b'\0':
+                    return [(k, v) for k, f, v in cc.props if not f and k not in ('name', 'AAPL,phandle')]
+    return None
+
 u32 = lambda *v: struct.pack('<%dI' % len(v), *v)
 u64 = lambda *v: struct.pack('<%dQ' % len(v), *v)
 cstr = lambda s: s.encode() + b'\0'
@@ -191,6 +203,7 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, spes
         # otherwise crashes trying to set the PMU boot stage (customer builds
         # ignore the -wdt_no_pmu boot-arg).
         node('wdt', [ph(), ('no-pmu', u32(1))]),
+        *([node('isp', [ph(), ('compatible', cstr('sweet,isp')), ('camera-front', u32(1)), ('camera-rear', u32(1))])] if '--camera' in sys.argv else []),
         # Main display: IOMobileFramebuffer.framework counts /arm-io children
         # with this device_type and reads the canvas size from the node
         # (the presented iPhone X size, see SweetFramebuffer.cpp);
@@ -257,7 +270,14 @@ def build(seed=None, qemu=False, highmem=False, native=False, midmem=False, spes
     # ('w30r', 'b3a8') that this kernel does not provide: Safari pages stay blank.
     if product_props:
         product_props = [(k, cstr('sRGB') if k == 'artwork-display-gamut' else v) for k, v in product_props]
-    product = [node('product', [ph()] + product_props)] if product_props else []
+    # --camera: MobileGestalt answers still-camera/camera-front/camera-rear from IODeviceTree:/product/camera and
+    # /arm-io/isp; SpringBoard hides Camera.app (SBAppTags still-camera) without them. Placeholders only: no ISP driver.
+    cam_kids = []
+    if '--camera' in sys.argv:
+        cam = d22ap_product_child('camera')
+        if cam:
+            cam_kids = [node('camera', [ph()] + cam)]
+    product = [node('product', [ph()] + product_props, cam_kids)] if product_props else []
 
     # Identity of the iPhone X whose userland runs here: compatible[0] is
     # hw.model/hw.target (D22AP), model is hw.machine/hw.product
