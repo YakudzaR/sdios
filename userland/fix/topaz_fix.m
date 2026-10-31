@@ -13,6 +13,8 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <dlfcn.h>
+#import <CoreFoundation/CoreFoundation.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -88,8 +90,44 @@ static void *watch(void *unused)
 	return NULL;
 }
 
+/*
+ * SpringBoard hides Camera.app (SBAppTags still-camera) when MobileGestalt says there is no still camera.
+ * Log what MobileGestalt answers for the camera keys and whether the device-tree nodes it reads exist.
+ */
+static void *probe_camera(void *unused)
+{
+	sleep(25);
+	bool (*getbool)(CFStringRef) = (bool (*)(CFStringRef))dlsym(RTLD_DEFAULT, "MGGetBoolAnswer");
+	CFTypeRef (*copy)(CFStringRef) = (CFTypeRef (*)(CFStringRef))dlsym(RTLD_DEFAULT, "MGCopyAnswer");
+	fprintf(stderr, "topaz-fix: probe MGGetBoolAnswer %p MGCopyAnswer %p\n", (void *)getbool, (void *)copy);
+	static const char *keys[] = {"still-camera", "camera-front", "camera-rear", "auto-focus-camera", "video-camera",
+	    "camera-flash", "front-facing-camera", "rear-facing-camera", "camera-live-effects", "RearCameraCapability",
+	    "FrontFacingCameraHDRCapability", "HasBaseband", "wifi", "telephony", "gps", NULL};
+	for (int i = 0; keys[i] != NULL && getbool != NULL; i++) {
+		CFStringRef k = CFStringCreateWithCString(NULL, keys[i], kCFStringEncodingUTF8);
+		bool v = getbool(k);
+		fprintf(stderr, "topaz-fix: probe %s = %d\n", keys[i], (int)v);
+		CFRelease(k);
+	}
+	typedef unsigned int (*frompath_t)(unsigned int, const char *);
+	frompath_t frompath = (frompath_t)dlsym(RTLD_DEFAULT, "IORegistryEntryFromPath");
+	static const char *paths[] = {"IODeviceTree:/arm-io/isp", "IODeviceTree:/product/camera", "IODeviceTree:/product", NULL};
+	for (int i = 0; paths[i] != NULL && frompath != NULL; i++) {
+		fprintf(stderr, "topaz-fix: probe %s -> entry %u\n", paths[i], frompath(0, paths[i]));
+	}
+	return NULL;
+}
+
 __attribute__((constructor)) static void topaz_fix_init(void)
 {
+	const char *pn = getprogname();
+	if (pn != NULL && strcmp(pn, "SpringBoard") == 0) {
+		pthread_t t3;
+		if (pthread_create(&t3, NULL, probe_camera, NULL) == 0) {
+			pthread_detach(t3);
+		}
+		return;
+	}
 	/*
 	 * The media library (MusicLibrary.framework, ML3MusicLibraryResourcesManager) takes its base path from
 	 * getenv("IPHONE_SHARED_RESOURCES_DIRECTORY") + "/Media". Real iOS sets it for every app; here nothing does,
@@ -99,7 +137,6 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 		setenv("IPHONE_SHARED_RESOURCES_DIRECTORY", "/var/mobile", 0);
 		fprintf(stderr, "topaz-fix: IPHONE_SHARED_RESOURCES_DIRECTORY was not set, now /var/mobile\n");
 	}
-	const char *pn = getprogname();
 	if (pn != NULL && strcmp(pn, "assetsd") == 0) {
 		Class c = objc_getClass("PLPrivacy");
 		if (c != Nil) {
