@@ -118,6 +118,45 @@ static void *probe_camera(void *unused)
 	return NULL;
 }
 
+/*
+ * Camera.app is hidden by SpringBoard (SBAppTags still-camera) because MobileGestalt computes still-camera = 0 here
+ * (no camera driver). Replace MGGetBoolAnswer/MGCopyAnswer through dyld interposing: the camera capability keys answer yes.
+ * Only the keys needed to show the icon; there is no camera behind it.
+ */
+extern bool MGGetBoolAnswer(CFStringRef key);
+extern CFTypeRef MGCopyAnswer(CFStringRef key);
+static int cam_key(CFStringRef k)
+{
+	return k != NULL && CFStringCompare(k, CFSTR("still-camera"), 0) == kCFCompareEqualTo;
+}
+static bool my_MGGetBoolAnswer(CFStringRef k)
+{
+	if (cam_key(k)) {
+		static int once;
+		if (!once++) {
+			fprintf(stderr, "topaz-fix: MGGetBoolAnswer(still-camera) forced to 1\n");
+		}
+		return true;
+	}
+	return MGGetBoolAnswer(k);
+}
+static CFTypeRef my_MGCopyAnswer(CFStringRef k)
+{
+	if (cam_key(k)) {
+		static int once;
+		if (!once++) {
+			fprintf(stderr, "topaz-fix: MGCopyAnswer(still-camera) forced to true\n");
+		}
+		return CFRetain(kCFBooleanTrue);
+	}
+	return MGCopyAnswer(k);
+}
+#define TOPAZ_INTERPOSE(rep, orig) \
+	__attribute__((used)) static struct { const void *replacement; const void *replacee; } _interpose_##orig \
+	__attribute__((section("__DATA,__interpose"))) = { (const void *)(unsigned long)&rep, (const void *)(unsigned long)&orig };
+TOPAZ_INTERPOSE(my_MGGetBoolAnswer, MGGetBoolAnswer)
+TOPAZ_INTERPOSE(my_MGCopyAnswer, MGCopyAnswer)
+
 __attribute__((constructor)) static void topaz_fix_init(void)
 {
 	const char *pn = getprogname();
