@@ -133,6 +133,9 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	 * getenv("IPHONE_SHARED_RESOURCES_DIRECTORY") + "/Media". Real iOS sets it for every app; here nothing does,
 	 * so the path (and databasePath) is nil. Set it before anything asks.
 	 */
+	if (pn != NULL && strcmp(pn, "Preferences") != 0 && strcmp(pn, "assetsd") != 0) {
+		return;
+	}
 	if (getenv("IPHONE_SHARED_RESOURCES_DIRECTORY") == NULL) {
 		setenv("IPHONE_SHARED_RESOURCES_DIRECTORY", "/var/mobile", 0);
 		fprintf(stderr, "topaz-fix: IPHONE_SHARED_RESOURCES_DIRECTORY was not set, now /var/mobile\n");
@@ -148,6 +151,9 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 			}
 		}
 		return;
+	}
+	if (pn != NULL && strcmp(pn, "Preferences") != 0) {
+		return;		/* injected with *app: only Settings needs the media library fix */
 	}
 	pthread_t t;
 	if (pthread_create(&t, NULL, watch, NULL) == 0) {
