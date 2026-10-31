@@ -20,6 +20,10 @@ Refuses unless: HFS+/HFSX, 4096-byte blocks or any size, unmounted bit set, jour
 """
 import struct, sys, os, argparse
 
+import functools, time
+print = functools.partial(print, flush=True)
+T0 = time.time()
+def step(m): print("[%5.1fs] %s" % (time.time() - T0, m))
 def die(m): sys.exit("ERROR: " + m)
 
 def main():
@@ -29,6 +33,7 @@ def main():
     ap.add_argument('--gib', type=float, required=True)
     ap.add_argument('--backup'); ap.add_argument('--write', action='store_true')
     a = ap.parse_args()
+    step("opening %s (%s)" % (a.image or a.disk, 'WRITE mode' if a.write else 'dry run, read only'))
     f = open(a.image or a.disk, 'r+b' if a.write else 'rb')
     size = f.seek(0, 2)
     base = 0; plba = 0; part_i = None
@@ -45,8 +50,10 @@ def main():
         print("backup: %s (%d bytes)" % (a.backup, os.path.getsize(a.backup)))
     def rd(off, n): f.seek(base + off); return f.read(n)
     def wr(off, d): f.seek(base + off); f.write(d)
+    step("reading the HFS+ volume header")
     vh = bytearray(rd(1024, 512))
     sig, ver, attr = struct.unpack('>2sHI', vh[:8])
+    step("signature %r attributes 0x%08x" % (sig, attr))
     if sig not in (b'H+', b'HX'): die("not HFS+: %r" % sig)
     if not attr & 0x100: die("volume not marked unmounted; run: sudo fsck.hfsplus -fy PARTITION")
     jib = struct.unpack('>I', vh[12:16])[0]
@@ -89,6 +96,7 @@ def main():
     if sum(e[1] for e in used) != ablk: die("allocation file extents do not sum up")
     newstart = tb          # first block of the new space
     print("blocks %d -> %d; bitmap %d -> %d blocks (+%d at block %d)" % (tb, newtb, ablk, need_blocks, add, newstart))
+    step("reading the allocation bitmap (%d blocks)" % ablk)
     # read old bitmap
     bm = bytearray()
     for s, c in used: bm += rd(s * bs, c * bs)
@@ -104,6 +112,7 @@ def main():
     for b in range(newtb, len(bm) * 8):    # padding bits past the end are set
         bm[b // 8] |= 0x80 >> (b % 8)
     freecnt = sum(8 - bin(x).count('1') for x in bm[:need_bytes]) if False else None
+    step("counting free blocks over %d blocks (a few seconds)" % newtb)
     # recount free blocks over the valid range
     nfree = 0
     for b in range(newtb):
@@ -123,26 +132,31 @@ def main():
     for j, (s, c) in enumerate(ext):
         struct.pack_into('>II', nvh, ao + 16 + 8 * j, s, c)
     if not a.write:
-        print("dry run: nothing written. Add --write to apply."); return
-    print("writing ...")
+        step("dry run finished: nothing was written. Add --write to apply."); return
+    step("WRITING. step 1/5: bitmap")
     # 1. bitmap: rewrite old extents then the new one
     pos = 0
     allext = [e for e in ext if e[1]]
     for s, c in allext:
         wr(s * bs, bytes(bm[pos:pos + c * bs])); pos += c * bs
     f.flush(); os.fsync(f.fileno())
+    step("step 2/5: new alternate volume header")
     # grow image file to the new size
     if a.image: f.truncate(newbytes) if size < newbytes + base else None
     # 2. alternate header at the new end
     wr(newbytes - 1024, bytes(nvh) + bytes(512)); f.flush(); os.fsync(f.fileno())
+    step("step 3/5: main volume header")
     # 3. main header
     wr(1024, bytes(nvh)); f.flush(); os.fsync(f.fileno())
+    step("step 4/5: clear the old alternate header")
     # 4. zero the old alternate header
     wr(oldbytes - 1024, bytes(1024)); f.flush(); os.fsync(f.fileno())
+    step("step 5/5: partition table (disk mode only)")
     # 5. MBR
     if a.disk:
         struct.pack_into('<I', mbr, 446 + 16 * part_i + 12, newbytes // 512)
         f.seek(0); f.write(mbr); f.flush(); os.fsync(f.fileno())
         print("MBR updated: partition %d sectors" % (newbytes // 512))
-    print("done. Now: sudo fsck.hfsplus -fy on the partition (re-read the table first: sudo partprobe /dev/sdb)")
+    step("done")
+    print("Now: sudo fsck.hfsplus -fy on the partition (re-read the table first: sudo partprobe /dev/sdb)")
 main()
