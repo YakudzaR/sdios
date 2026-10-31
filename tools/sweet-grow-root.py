@@ -62,8 +62,9 @@ def main():
     if attr & 0x2000:
         ji = rd(jib * bs, 512)
         jflags = struct.unpack('>I', ji[:4])[0]
-        joff, jsz = struct.unpack('>QQ', ji[44:60])
+        joff, jsz = struct.unpack('>QQ', ji[36:52])   # flags u32, device_signature u32[8], offset u64, size u64
         if jflags & 1 and not jflags & 2:   # in filesystem
+            step("journal info: flags 0x%x offset %d size %d" % (jflags, joff, jsz))
             jh = rd(joff, 512)
             magic, endian, jstart, jend = struct.unpack('>IIQQ', jh[:24])
             if magic != 0x4a4e4c78: die("bad journal header magic %08x" % magic)
