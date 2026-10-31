@@ -247,10 +247,7 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 {
 	const char *pn = getprogname();
 	if (pn != NULL && strcmp(pn, "SpringBoard") == 0) {
-		pthread_t t3;
-		if (pthread_create(&t3, NULL, probe_camera, NULL) == 0) {
-			pthread_detach(t3);
-		}
+		/* the probes (probe_camera, probe_camera2) crashed SpringBoard from a background thread: not started any more */
 		return;
 	}
 	/*
