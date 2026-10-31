@@ -10,6 +10,8 @@
  */
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
+#include <strings.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -94,6 +96,87 @@ static void *watch(void *unused)
  * SpringBoard hides Camera.app (SBAppTags still-camera) when MobileGestalt says there is no still camera.
  * Log what MobileGestalt answers for the camera keys and whether the device-tree nodes it reads exist.
  */
+static void dump_methods(const char *cn, const char *pat)
+{
+	Class c = objc_getClass(cn);
+	if (c == Nil) {
+		fprintf(stderr, "topaz-fix: probe2 class %s not found\n", cn);
+		return;
+	}
+	for (int meta = 0; meta < 2; meta++) {
+		Class k = meta ? object_getClass(c) : c;
+		unsigned n = 0;
+		Method *ms = class_copyMethodList(k, &n);
+		for (unsigned i = 0; i < n; i++) {
+			const char *nm = sel_getName(method_getName(ms[i]));
+			if (strcasestr(nm, pat) != NULL) {
+				fprintf(stderr, "topaz-fix: probe2 %c[%s %s]\n", meta ? '+' : '-', cn, nm);
+			}
+		}
+		free(ms);
+	}
+}
+
+static void log_obj(const char *what, id o)
+{
+	fprintf(stderr, "topaz-fix: probe2 %s = %s\n", what, o == nil ? "(nil)" : [[o description] UTF8String]);
+}
+
+static void probe_camera2(void)
+{
+	id (*send)(id, SEL, ...) = (id (*)(id, SEL, ...))objc_msgSend;
+	Class lsw = objc_getClass("LSApplicationWorkspace"), lsp = objc_getClass("LSApplicationProxy");
+	if (lsw != Nil) {
+		id ws = send((id)lsw, sel_registerName("defaultWorkspace"));
+		BOOL (*sb)(id, SEL, id) = (BOOL (*)(id, SEL, id))objc_msgSend;
+		fprintf(stderr, "topaz-fix: probe2 LS applicationIsInstalled(com.apple.camera) = %d\n",
+		    (int)sb(ws, sel_registerName("applicationIsInstalled:"), @"com.apple.camera"));
+	}
+	if (lsp != Nil) {
+		id px = send((id)lsp, sel_registerName("applicationProxyForIdentifier:"), @"com.apple.camera");
+		log_obj("LS proxy", px);
+		if (px != nil && [px respondsToSelector:sel_registerName("appTags")]) {
+			log_obj("LS appTags", send(px, sel_registerName("appTags")));
+		}
+		if (px != nil && [px respondsToSelector:sel_registerName("isLaunchProhibited")]) {
+			fprintf(stderr, "topaz-fix: probe2 LS isLaunchProhibited = %d\n",
+			    (int)((BOOL (*)(id, SEL))objc_msgSend)(px, sel_registerName("isLaunchProhibited")));
+		}
+		if (px != nil && [px respondsToSelector:sel_registerName("isRestricted")]) {
+			fprintf(stderr, "topaz-fix: probe2 LS isRestricted = %d\n",
+			    (int)((BOOL (*)(id, SEL))objc_msgSend)(px, sel_registerName("isRestricted")));
+		}
+	}
+	Class sbc = objc_getClass("SBApplicationController");
+	if (sbc != Nil) {
+		id ctl = send((id)sbc, sel_registerName("sharedInstanceIfExists"));
+		log_obj("SBApplicationController", ctl);
+		if (ctl != nil) {
+			id app = send(ctl, sel_registerName("applicationWithBundleIdentifier:"), @"com.apple.camera");
+			log_obj("SBApplication(com.apple.camera)", app);
+		}
+	}
+	Class sbi = objc_getClass("SBIconController");
+	if (sbi != Nil) {
+		id ic = send((id)sbi, sel_registerName("sharedInstance"));
+		id model = (ic != nil && [ic respondsToSelector:sel_registerName("model")]) ? send(ic, sel_registerName("model")) : nil;
+		log_obj("SBIconModel", model);
+		if (model != nil) {
+			id icon = send(model, sel_registerName("leafIconForIdentifier:"), @"com.apple.camera");
+			log_obj("leafIcon(com.apple.camera)", icon);
+			id vis = [model respondsToSelector:sel_registerName("visibleIconIdentifiers")] ? send(model, sel_registerName("visibleIconIdentifiers")) : nil;
+			fprintf(stderr, "topaz-fix: probe2 visible icon count = %lu\n", (unsigned long)[(NSSet *)vis count]);
+		}
+	}
+	static const char *cls[] = {"SBApplicationInfo", "SBApplication", "SBApplicationController", "SBIconModel", "SBHIconModel", "SBApplicationIcon", NULL};
+	static const char *pats[] = {"tag", "hiddenapp", NULL};
+	for (int i = 0; cls[i] != NULL; i++) {
+		for (int j = 0; pats[j] != NULL; j++) {
+			dump_methods(cls[i], pats[j]);
+		}
+	}
+}
+
 static void *probe_camera(void *unused)
 {
 	sleep(25);
@@ -114,6 +197,9 @@ static void *probe_camera(void *unused)
 	static const char *paths[] = {"IODeviceTree:/arm-io/isp", "IODeviceTree:/product/camera", "IODeviceTree:/product", NULL};
 	for (int i = 0; paths[i] != NULL && frompath != NULL; i++) {
 		fprintf(stderr, "topaz-fix: probe %s -> entry %u\n", paths[i], frompath(0, paths[i]));
+	}
+	@autoreleasepool {
+		probe_camera2();
 	}
 	return NULL;
 }
