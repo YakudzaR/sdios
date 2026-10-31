@@ -66,8 +66,12 @@ def main():
         if jflags & 1 and not jflags & 2:   # in filesystem
             step("journal info: flags 0x%x offset %d size %d" % (jflags, joff, jsz))
             jh = rd(joff, 512)
-            magic, endian, jstart, jend = struct.unpack('>IIQQ', jh[:24])
+            bo = '>'
+            if struct.unpack('<I', jh[:4])[0] == 0x4a4e4c78: bo = '<'     # journal written by a little-endian device
+            magic, endian, jstart, jend = struct.unpack(bo + 'IIQQ', jh[:24])
             if magic != 0x4a4e4c78: die("bad journal header magic %08x" % magic)
+            if endian != 0x12345678: die("bad journal endian field %08x" % endian)
+            step("journal header (%s-endian): start %d end %d" % ('little' if bo == '<' else 'big', jstart, jend))
             if jstart != jend: die("journal not empty (start %d end %d); run fsck.hfsplus -fy and mount/unmount once" % (jstart, jend))
             print("journal at %d size %d: empty" % (joff, jsz))
         else:
