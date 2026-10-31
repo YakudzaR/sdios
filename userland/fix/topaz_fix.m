@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 
 static IMP orig_dbpath, orig_default;
@@ -34,6 +35,36 @@ static id my_default(id cls, SEL _cmd)
 	id r = ((id (*)(id, SEL))orig_default)(cls, _cmd);
 	fprintf(stderr, "topaz-fix: defaultMediaLibrary = %p\n", (void *)r);
 	return r;
+}
+
+/*
+ * assetsd (Photos) raises 'assetsd requires TCCPhotosService access' when
+ * -[PLPrivacy photosAccessAllowedWithScope:] returns nonzero at start-up. Log what it returns and report 0.
+ */
+static IMP orig_photos;
+static uintptr_t my_photos(id self, SEL _cmd, uintptr_t scope)
+{
+	uintptr_t r = ((uintptr_t (*)(id, SEL, uintptr_t))orig_photos)(self, _cmd, scope);
+	fprintf(stderr, "topaz-fix: photosAccessAllowedWithScope:%lu was %lu, returning 0\n", (unsigned long)scope, (unsigned long)r);
+	return 0;
+}
+
+static void *watch_photos(void *unused)
+{
+	for (int i = 0; i < 6000; i++) {
+		Class c = objc_getClass("PLPrivacy");
+		if (c != Nil) {
+			Method m = class_getInstanceMethod(c, sel_registerName("photosAccessAllowedWithScope:"));
+			if (m != NULL) {
+				orig_photos = method_setImplementation(m, (IMP)my_photos);
+			}
+			fprintf(stderr, "topaz-fix: patched PLPrivacy (%p)\n", (void *)m);
+			return NULL;
+		}
+		usleep(2000);
+	}
+	fprintf(stderr, "topaz-fix: PLPrivacy never appeared\n");
+	return NULL;
 }
 
 static void *watch(void *unused)
@@ -67,6 +98,19 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	if (getenv("IPHONE_SHARED_RESOURCES_DIRECTORY") == NULL) {
 		setenv("IPHONE_SHARED_RESOURCES_DIRECTORY", "/var/mobile", 0);
 		fprintf(stderr, "topaz-fix: IPHONE_SHARED_RESOURCES_DIRECTORY was not set, now /var/mobile\n");
+	}
+	const char *pn = getprogname();
+	if (pn != NULL && strcmp(pn, "assetsd") == 0) {
+		Class c = objc_getClass("PLPrivacy");
+		if (c != Nil) {
+			watch_photos(NULL);
+		} else {
+			pthread_t t2;
+			if (pthread_create(&t2, NULL, watch_photos, NULL) == 0) {
+				pthread_detach(t2);
+			}
+		}
+		return;
 	}
 	pthread_t t;
 	if (pthread_create(&t, NULL, watch, NULL) == 0) {
