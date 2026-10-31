@@ -114,6 +114,8 @@ def main():
     bm += bytearray(need_blocks * bs - len(bm))
     for b in range(newstart, newstart + add):
         bm[b // 8] |= 0x80 >> (b % 8)
+    lastb = newtb - 1                      # the new last block holds the alternate volume header: allocated
+    bm[lastb // 8] |= 0x80 >> (lastb % 8)
     for b in range(newtb, len(bm) * 8):    # padding bits past the end are set
         bm[b // 8] |= 0x80 >> (b % 8)
     freecnt = sum(8 - bin(x).count('1') for x in bm[:need_bytes]) if False else None
@@ -123,8 +125,8 @@ def main():
     for b in range(newtb):
         if not bm[b // 8] & (0x80 >> (b % 8)): nfree += 1
     print("freeBlocks %d -> %d" % (fb, nfree))
-    if nfree != fb + (newtb - tb) - add + 1:
-        print("note: recount differs from the expected %d (bitmap had other differences)" % (fb + (newtb - tb) - add + 1))
+    if nfree != fb + (newtb - tb) - add:
+        print("note: recount differs from the expected %d (bitmap had other differences)" % (fb + (newtb - tb) - add))
     # new header
     nvh = bytearray(vh)
     struct.pack_into('>I', nvh, 44, newtb)
