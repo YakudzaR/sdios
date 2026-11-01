@@ -295,6 +295,24 @@ static void *watch_ci(void *unused)
 	return NULL;
 }
 
+/*
+ * Photos (MobileSlideShow) aborts in -[PXZoomableInlineHeadersDataSourceManager initWithAssetsDataSourceManager:]
+ * (assert numberOfSections == 1) once the library holds an asset. NSAssert just returns when the handler does not throw:
+ * ignore that one assertion (and log it), let every other one through.
+ */
+static IMP orig_assert;
+static void my_assert(id self, SEL _cmd, SEL sel, id obj, NSString *file, NSInteger line, NSString *fmt)
+{
+	if (file != nil && [file rangeOfString:@"PXZoomableInlineHeadersDataSourceManager"].location != NSNotFound) {
+		static int once;
+		if (once++ < 3) {
+			fprintf(stderr, "topaz-fix: ignored assertion in %s:%ld\n", [file UTF8String], (long)line);
+		}
+		return;
+	}
+	((void (*)(id, SEL, SEL, id, NSString *, NSInteger, NSString *))orig_assert)(self, _cmd, sel, obj, file, line, fmt);
+}
+
 __attribute__((constructor)) static void topaz_fix_init(void)
 {
 	const char *pn = getprogname();
@@ -307,6 +325,15 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	 * getenv("IPHONE_SHARED_RESOURCES_DIRECTORY") + "/Media". Real iOS sets it for every app; here nothing does,
 	 * so the path (and databasePath) is nil. Set it before anything asks.
 	 */
+	if (pn != NULL && strcmp(pn, "MobileSlideShow") == 0) {
+		Class ah = objc_getClass("NSAssertionHandler");
+		Method am = ah != Nil ? class_getInstanceMethod(ah, sel_registerName("handleFailureInMethod:object:file:lineNumber:description:")) : NULL;
+		if (am != NULL) {
+			orig_assert = method_setImplementation(am, (IMP)my_assert);
+		}
+		fprintf(stderr, "topaz-fix: Photos: assertion handler patched (%p)\n", (void *)am);
+		return;
+	}
 	if (pn != NULL && strcmp(pn, "MobileSafari") == 0) {
 		pthread_t t4;
 		if (pthread_create(&t4, NULL, watch_ci, NULL) == 0) {
