@@ -264,6 +264,16 @@ static id my_ci(id cls, SEL _cmd, NSDictionary *opts)
 	return ((id (*)(id, SEL, id))orig_ci)(cls, _cmd, opts);
 }
 
+/* the shared CIContext cannot be created here (EAGL/GL missing): hand back nil instead of crashing */
+static id my_single(id cls, SEL _cmd)
+{
+	static int once;
+	if (!once++) {
+		fprintf(stderr, "topaz-fix: +[CIContext _singletonContext] returns nil (no GL)\n");
+	}
+	return nil;
+}
+
 static void *watch_ci(void *unused)
 {
 	for (int i = 0; i < 6000; i++) {
@@ -273,7 +283,11 @@ static void *watch_ci(void *unused)
 			if (m != NULL) {
 				orig_ci = method_setImplementation(m, (IMP)my_ci);
 			}
-			fprintf(stderr, "topaz-fix: patched CIContext (%p)\n", (void *)m);
+			Method sm = class_getClassMethod(c, sel_registerName("_singletonContext"));
+			if (sm != NULL) {
+				method_setImplementation(sm, (IMP)my_single);
+			}
+			fprintf(stderr, "topaz-fix: patched CIContext (%p) singleton (%p)\n", (void *)m, (void *)sm);
 			return NULL;
 		}
 		usleep(20000);
