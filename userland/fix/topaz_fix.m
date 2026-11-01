@@ -243,6 +243,44 @@ static CFTypeRef my_MGCopyAnswer(CFStringRef k)
 TOPAZ_INTERPOSE(my_MGGetBoolAnswer, MGGetBoolAnswer)
 TOPAZ_INTERPOSE(my_MGCopyAnswer, MGCopyAnswer)
 
+/*
+ * CoreImage's default context goes through EAGL/OpenGL ES (CI::GLContext::init), which does not exist on this GPU stack:
+ * it calls a null pointer (MobileSafari crashed on a long press on an image). Ask for the CPU renderer instead.
+ */
+static IMP orig_ci;
+static id my_ci(id cls, SEL _cmd, NSDictionary *opts)
+{
+	CFStringRef *key = (CFStringRef *)dlsym(RTLD_DEFAULT, "kCIContextUseSoftwareRenderer");
+	if (key != NULL && *key != NULL) {
+		NSMutableDictionary *m = opts != nil ? [opts mutableCopy] : [NSMutableDictionary dictionary];
+		[m setObject:[NSNumber numberWithBool:YES] forKey:(NSString *)*key];
+		id r = ((id (*)(id, SEL, id))orig_ci)(cls, _cmd, m);
+		static int once;
+		if (!once++) {
+			fprintf(stderr, "topaz-fix: CIContext contextWithOptions: forced the software renderer (%p)\n", (void *)r);
+		}
+		return r;
+	}
+	return ((id (*)(id, SEL, id))orig_ci)(cls, _cmd, opts);
+}
+
+static void *watch_ci(void *unused)
+{
+	for (int i = 0; i < 6000; i++) {
+		Class c = objc_getClass("CIContext");
+		if (c != Nil) {
+			Method m = class_getClassMethod(c, sel_registerName("contextWithOptions:"));
+			if (m != NULL) {
+				orig_ci = method_setImplementation(m, (IMP)my_ci);
+			}
+			fprintf(stderr, "topaz-fix: patched CIContext (%p)\n", (void *)m);
+			return NULL;
+		}
+		usleep(20000);
+	}
+	return NULL;
+}
+
 __attribute__((constructor)) static void topaz_fix_init(void)
 {
 	const char *pn = getprogname();
@@ -255,6 +293,13 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	 * getenv("IPHONE_SHARED_RESOURCES_DIRECTORY") + "/Media". Real iOS sets it for every app; here nothing does,
 	 * so the path (and databasePath) is nil. Set it before anything asks.
 	 */
+	if (pn != NULL && strcmp(pn, "MobileSafari") == 0) {
+		pthread_t t4;
+		if (pthread_create(&t4, NULL, watch_ci, NULL) == 0) {
+			pthread_detach(t4);
+		}
+		return;
+	}
 	if (pn != NULL && strcmp(pn, "Preferences") != 0 && strcmp(pn, "assetsd") != 0) {
 		return;
 	}
