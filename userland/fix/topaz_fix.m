@@ -314,6 +314,37 @@ static void my_assert(id self, SEL _cmd, SEL sel, id obj, NSString *file, NSInte
 	((void (*)(id, SEL, SEL, id, NSString *, NSInteger, NSString *))orig_assert)(self, _cmd, sel, obj, file, line, fmt);
 }
 
+/*
+ * -[PXSearchHistoryManager _recentSearchesFileURL] builds its path from a directory that comes back nil here and puts it in an
+ * array (Search tab crash: attempt to insert nil object). Use a file in the app's temporary directory.
+ */
+static id my_recent_url(id self, SEL _cmd)
+{
+	static int once;
+	NSString *dir = NSTemporaryDirectory();
+	if (!once++) {
+		fprintf(stderr, "topaz-fix: PXSearchHistoryManager recent searches file in %s\n", [dir UTF8String]);
+	}
+	return [NSURL fileURLWithPath:[dir stringByAppendingPathComponent:@"RecentSearches.plist"]];
+}
+
+static void *watch_search(void *unused)
+{
+	for (int i = 0; i < 6000; i++) {
+		Class c = objc_getClass("PXSearchHistoryManager");
+		if (c != Nil) {
+			Method m = class_getInstanceMethod(c, sel_registerName("_recentSearchesFileURL"));
+			if (m != NULL) {
+				method_setImplementation(m, (IMP)my_recent_url);
+			}
+			fprintf(stderr, "topaz-fix: patched PXSearchHistoryManager (%p)\n", (void *)m);
+			return NULL;
+		}
+		usleep(20000);
+	}
+	return NULL;
+}
+
 __attribute__((constructor)) static void topaz_fix_init(void)
 {
 	const char *pn = getprogname();
@@ -333,6 +364,10 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 			orig_assert = method_setImplementation(am, (IMP)my_assert);
 		}
 		fprintf(stderr, "topaz-fix: Photos: assertion handler patched (%p)\n", (void *)am);
+		pthread_t t5;
+		if (pthread_create(&t5, NULL, watch_search, NULL) == 0) {
+			pthread_detach(t5);
+		}
 		return;
 	}
 	if (pn != NULL && strcmp(pn, "MobileSafari") == 0) {
