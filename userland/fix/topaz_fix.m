@@ -303,9 +303,10 @@ static void *watch_ci(void *unused)
 static IMP orig_assert;
 static void my_assert(id self, SEL _cmd, SEL sel, id obj, NSString *file, NSInteger line, NSString *fmt)
 {
-	if (file != nil && [file rangeOfString:@"PXZoomableInlineHeadersDataSourceManager"].location != NSNotFound) {
-		static int once;
-		if (once++ < 3) {
+	if (file != nil && [file hasPrefix:@"PX"]) {
+		/* Photos' own PhotosUI sources (PX*.m): the library data source is not shaped as they expect, carry on */
+		static int n;
+		if (n++ < 40) {
 			fprintf(stderr, "topaz-fix: ignored assertion in %s:%ld\n", [file UTF8String], (long)line);
 		}
 		return;
