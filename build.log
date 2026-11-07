@@ -1,0 +1,2 @@
+ld: warning: -undefined dynamic_lookup is deprecated on iOS
+userland/fix/out/libtopaz-fix.dylib: Mach-O 64-bit dynamically linked shared library arm64
