@@ -1,6 +1,15 @@
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -132,6 +132,94 @@
+@@ -37,6 +37,8 @@
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ void sweet_usb_probe(void);
+ static void sweet_usb_gadget_start(vm_offset_t dwc);
++static vm_offset_t usb_qscratch_pa;
++static void usb_qscratch_pa_set(vm_offset_t pa) { usb_qscratch_pa = pa; }
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ 
+ #define GCC_PA                  0x00100000
+@@ -132,6 +134,99 @@
  }
  
  /*
@@ -76,6 +85,11 @@
 +				printf("SPES USB: QSCRATCH CGCTL 0x%08x GENERAL_CFG 0x%08x HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
 +				    usb_rd(qs, 0x00), usb_rd(qs, 0x08), usb_rd(qs, 0x10), usb_rd(qs, 0x30));
 +			}
++			if (mode >= 2) {
++				printf("SPES USB: starting USB device (ECM, ue0 192.168.7.2, log to 192.168.7.1:5140)\n");
++				usb_qscratch_pa_set(SPES_QSCRATCH_PA);
++				sweet_usb_gadget_start(dwc);
++			}
 +		}
 +	}
 +	if (cbcr[7] & CBCR_CLK_OFF) {
@@ -95,6 +109,15 @@
   * Step 2: USB device mode with only the default control endpoint, enough
   * for the host to enumerate the phone (boot-arg sweetusb=2). ABL leaves
   * the DWC3 powered, clocked, in device mode and halted, with the PHY set
+@@ -866,7 +961,7 @@
+ 	dwc_wr(DALEPENA, 0x3);
+ 	ud_start_setup();
+ 
+-	vm_offset_t qs = ml_io_map(QSCRATCH_PA, 0x100);
++	vm_offset_t qs = ml_io_map(usb_qscratch_pa ? usb_qscratch_pa : QSCRATCH_PA, 0x100);
+ 	if (qs != 0) {
+ 		uint32_t hs = usb_rd(qs, QSCRATCH_HS_PHY_CTRL), ss = usb_rd(qs, QSCRATCH_SS_PHY_CTRL);
+ 		printf("SWEET USB: QSCRATCH HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x GENERAL_CFG 0x%08x\n",
 --- a/bsd/dev/sweet_ufs.c
 +++ b/bsd/dev/sweet_ufs.c
 @@ -53,6 +53,7 @@
