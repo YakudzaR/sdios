@@ -382,6 +382,16 @@ static id my_fileurl(id cls, SEL _cmd, NSString *path, BOOL dir)
 	return ((id (*)(id, SEL, id, BOOL))orig_fileurl)(cls, _cmd, path, dir);
 }
 
+static void aegir_exc(NSException *e)
+{
+	fprintf(stderr, "topaz-fix: AegirPoster exception %s: %s\n", [[e name] UTF8String], [[e reason] UTF8String]);
+	NSArray *st = [e callStackSymbols];
+	for (NSUInteger i = 0; i < [st count] && i < 12; i++) {
+		fprintf(stderr, "topaz-fix:   %s\n", [[st objectAtIndex:i] UTF8String]);
+	}
+	fflush(stderr);
+}
+
 __attribute__((constructor)) static void topaz_fix_init(void)
 {
 	const char *pn = getprogname();
@@ -394,6 +404,11 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	 * getenv("IPHONE_SHARED_RESOURCES_DIRECTORY") + "/Media". Real iOS sets it for every app; here nothing does,
 	 * so the path (and databasePath) is nil. Set it before anything asks.
 	 */
+	if (pn != NULL && strcmp(pn, "AegirPoster") == 0) {
+		NSSetUncaughtExceptionHandler(aegir_exc);
+		fprintf(stderr, "topaz-fix: AegirPoster exception logger installed\n");
+		return;
+	}
 	if (pn != NULL && strcmp(pn, "syncdefaultsd") == 0) {
 		Method m1 = class_getClassMethod(objc_getClass("NSString"), sel_registerName("stringWithUTF8String:"));
 		Method m2 = class_getClassMethod(objc_getClass("NSURL"), sel_registerName("fileURLWithPath:isDirectory:"));
