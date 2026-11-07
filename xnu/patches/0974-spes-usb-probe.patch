@@ -105,11 +105,12 @@
  
  #define REG_CAP         0x00
  #define REG_IS          0x20
-@@ -827,6 +828,7 @@
- 		sweet_usb_probe();
- 	} else {
- 		printf("SWEET UFS: USB skipped (topaz, sweethw=0)\n");
-+		spes_usb_probe();
- 	}
- 	return 0;
- }
+@@ -745,6 +746,8 @@
+ 	char want[64] = "userdata";
+ 	int error;
+ 
++	/* spes has no /sweet-ufs node: report USB state before bailing out */
++	spes_usb_probe();
+ 	if (SecureDTLookupEntry(NULL, "/sweet-ufs", &node) != kSuccess ||
+ 	    SecureDTGetProperty(node, "reg", (void const **)&reg, &size) != kSuccess ||
+ 	    size < 2 * sizeof(uintptr_t)) {
