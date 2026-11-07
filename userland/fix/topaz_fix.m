@@ -345,6 +345,43 @@ static void *watch_search(void *unused)
 	return NULL;
 }
 
+/*
+ * syncdefaultsd: for each client it takes the process path from proc_pidpath_audittoken, makes an NSString with
+ * +stringWithUTF8String: and a URL with +fileURLWithPath:isDirectory:. Here the string comes back nil (the path bytes are not
+ * valid UTF-8), the URL call throws 'nil string parameter' and syncdefaultsd dies in a restart loop. Log the bytes, fall
+ * back to Latin-1 for the string and to "/" for the URL.
+ */
+static IMP orig_utf8, orig_fileurl;
+static id my_utf8(id cls, SEL _cmd, const char *cs)
+{
+	id r = ((id (*)(id, SEL, const char *))orig_utf8)(cls, _cmd, cs);
+	if (r == nil && cs != NULL) {
+		static int n;
+		if (n++ < 5) {
+			char hex[200];
+			size_t i = 0, o = 0;
+			for (; i < 48 && cs[i] != 0 && o + 3 < sizeof(hex); i++) {
+				o += (size_t)snprintf(hex + o, sizeof(hex) - o, "%02x", (unsigned char)cs[i]);
+			}
+			hex[o] = 0;
+			fprintf(stderr, "topaz-fix: stringWithUTF8String: was nil for %zu+ bytes: %s\n", i, hex);
+		}
+		return [[[NSString alloc] initWithCString:cs encoding:NSISOLatin1StringEncoding] autorelease];
+	}
+	return r;
+}
+static id my_fileurl(id cls, SEL _cmd, NSString *path, BOOL dir)
+{
+	if (path == nil) {
+		static int n;
+		if (n++ < 5) {
+			fprintf(stderr, "topaz-fix: fileURLWithPath:isDirectory: got a nil path, using /\n");
+		}
+		path = @"/";
+	}
+	return ((id (*)(id, SEL, id, BOOL))orig_fileurl)(cls, _cmd, path, dir);
+}
+
 __attribute__((constructor)) static void topaz_fix_init(void)
 {
 	const char *pn = getprogname();
@@ -357,6 +394,18 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	 * getenv("IPHONE_SHARED_RESOURCES_DIRECTORY") + "/Media". Real iOS sets it for every app; here nothing does,
 	 * so the path (and databasePath) is nil. Set it before anything asks.
 	 */
+	if (pn != NULL && strcmp(pn, "syncdefaultsd") == 0) {
+		Method m1 = class_getClassMethod(objc_getClass("NSString"), sel_registerName("stringWithUTF8String:"));
+		Method m2 = class_getClassMethod(objc_getClass("NSURL"), sel_registerName("fileURLWithPath:isDirectory:"));
+		if (m1 != NULL) {
+			orig_utf8 = method_setImplementation(m1, (IMP)my_utf8);
+		}
+		if (m2 != NULL) {
+			orig_fileurl = method_setImplementation(m2, (IMP)my_fileurl);
+		}
+		fprintf(stderr, "topaz-fix: syncdefaultsd patched (%p %p)\n", (void *)m1, (void *)m2);
+		return;
+	}
 	if (pn != NULL && strcmp(pn, "MobileSlideShow") == 0) {
 		Class ah = objc_getClass("NSAssertionHandler");
 		Method am = ah != Nil ? class_getInstanceMethod(ah, sel_registerName("handleFailureInMethod:object:file:lineNumber:description:")) : NULL;
