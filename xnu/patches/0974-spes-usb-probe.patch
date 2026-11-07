@@ -1,0 +1,115 @@
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -132,6 +132,94 @@
+ }
+ 
+ /*
++ * Redmi Note 11 (spes, SM6225): read-only USB state report (boot-arg
++ * spesusb=1). Addresses come from the spes Android DTB (DWC3 wrapper
++ * ssusb@4e00000, HS PHY 0x1613000, QSCRATCH 0x4ef8800) and the SM6115
++ * GCC layout (same family as SM6225). Nothing is written. The DWC3 is
++ * only read when its GDSC and bus clocks report on, the PHY only when
++ * the AHB2PHY clock is on, so a gated block is never touched.
++ */
++#define SPES_GCC_PA             0x01400000
++#define SPES_GCC_SIZE           0x00200000
++#define SPES_DWC3_PA            0x04e00000
++#define SPES_DWC3_SIZE          0x0000d000
++#define SPES_QSCRATCH_PA        0x04ef8800
++#define SPES_HSPHY_PA           0x01613000
++
++static const struct {
++	const char *name;
++	uint32_t    off;
++} spes_cbcr[] = {
++	{ "master", 0x1a010 },
++	{ "sleep", 0x1a014 },
++	{ "utmi", 0x1a018 },
++	{ "sys-noc-axi", 0x1a080 },
++	{ "cfg-noc-axi", 0x1a084 },
++	{ "phy-aux", 0x1a054 },
++	{ "phy-pipe", 0x1a058 },
++	{ "ahb2phy", 0x1d008 },
++	{ "clkref", 0x9f000 },
++};
++
++void
++spes_usb_probe(void)
++{
++	int mode = 0;
++	uint32_t cbcr[sizeof(spes_cbcr) / sizeof(spes_cbcr[0])];
++
++	PE_parse_boot_argn("spesusb", &mode, sizeof(mode));
++	if (mode < 1) {
++		return;
++	}
++	vm_offset_t gcc = ml_io_map(SPES_GCC_PA, SPES_GCC_SIZE);
++	if (gcc == 0) {
++		printf("SPES USB: GCC map failed\n");
++		return;
++	}
++	uint32_t gdscr = usb_rd(gcc, 0x1a004);
++	printf("SPES USB: GDSC usb30_prim 0x%08x (%s)\n", gdscr, (gdscr & (1u << 31)) ? "on" : "off");
++	for (unsigned i = 0; i < sizeof(spes_cbcr) / sizeof(spes_cbcr[0]); i++) {
++		cbcr[i] = usb_rd(gcc, spes_cbcr[i].off);
++		printf("SPES USB: clk %-12s CBCR 0x%08x (%s)\n", spes_cbcr[i].name, cbcr[i],
++		    (cbcr[i] & CBCR_CLK_OFF) ? "off" : "on");
++	}
++	if (!(gdscr & (1u << 31)) || (cbcr[0] & CBCR_CLK_OFF) || (cbcr[4] & CBCR_CLK_OFF)) {
++		printf("SPES USB: controller unpowered or unclocked; DWC3 not read\n");
++	} else {
++		vm_offset_t dwc = ml_io_map(SPES_DWC3_PA, SPES_DWC3_SIZE);
++		if (dwc == 0) {
++			printf("SPES USB: DWC3 map failed\n");
++		} else {
++			printf("SPES USB: DWC3 GSNPSID 0x%08x GCTL 0x%08x GSTS 0x%08x GUSB2PHYCFG 0x%08x GUSB3PIPECTL 0x%08x\n",
++			    usb_rd(dwc, 0xc120), usb_rd(dwc, 0xc110), usb_rd(dwc, 0xc118), usb_rd(dwc, 0xc200),
++			    usb_rd(dwc, 0xc2c0));
++			printf("SPES USB: DWC3 DCFG 0x%08x DCTL 0x%08x DEVTEN 0x%08x DSTS 0x%08x DALEPENA 0x%08x\n",
++			    usb_rd(dwc, 0xc700), usb_rd(dwc, 0xc704), usb_rd(dwc, 0xc708), usb_rd(dwc, 0xc70c),
++			    usb_rd(dwc, 0xc720));
++			printf("SPES USB: DWC3 GEVNTADR 0x%08x%08x GEVNTSIZ 0x%08x GEVNTCOUNT 0x%08x GHWPARAMS0 0x%08x\n",
++			    usb_rd(dwc, 0xc404), usb_rd(dwc, 0xc400), usb_rd(dwc, 0xc408), usb_rd(dwc, 0xc40c),
++			    usb_rd(dwc, 0xc140));
++			vm_offset_t qs = ml_io_map(SPES_QSCRATCH_PA, 0x100);
++			if (qs != 0) {
++				printf("SPES USB: QSCRATCH CGCTL 0x%08x GENERAL_CFG 0x%08x HS_PHY_CTRL 0x%08x SS_PHY_CTRL 0x%08x\n",
++				    usb_rd(qs, 0x00), usb_rd(qs, 0x08), usb_rd(qs, 0x10), usb_rd(qs, 0x30));
++			}
++		}
++	}
++	if (cbcr[7] & CBCR_CLK_OFF) {
++		printf("SPES USB: ahb2phy clock off; HS PHY not read\n");
++		return;
++	}
++	vm_offset_t phy = ml_io_map(SPES_HSPHY_PA, 0x400);
++	if (phy != 0) {
++		for (unsigned o = 0; o < 0x40; o += 16) {
++			printf("SPES USB: HSPHY +0x%03x: %08x %08x %08x %08x\n", o,
++			    usb_rd(phy, o), usb_rd(phy, o + 4), usb_rd(phy, o + 8), usb_rd(phy, o + 12));
++		}
++	}
++}
++
++/*
+  * Step 2: USB device mode with only the default control endpoint, enough
+  * for the host to enumerate the phone (boot-arg sweetusb=2). ABL leaves
+  * the DWC3 powered, clocked, in device mode and halted, with the PHY set
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -53,6 +53,7 @@
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
+ extern void sweet_usb_probe(void);
++extern void spes_usb_probe(void);
+ 
+ #define REG_CAP         0x00
+ #define REG_IS          0x20
+@@ -827,6 +828,7 @@
+ 		sweet_usb_probe();
+ 	} else {
+ 		printf("SWEET UFS: USB skipped (topaz, sweethw=0)\n");
++		spes_usb_probe();
+ 	}
+ 	return 0;
+ }
