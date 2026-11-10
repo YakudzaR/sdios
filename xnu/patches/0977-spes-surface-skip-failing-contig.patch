@@ -1,0 +1,26 @@
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -1092,10 +1092,22 @@
+ 					mem = sweet_res_take(take);
+ 				}
+ 			}
+-			if (mem == NULL && gpu_low && take <= (16u << 20)) {
++			/*
++			 * A failed contiguous search scans every page and yields hundreds of times (the
++			 * vm_page_find_contiguous lines in the log). Remember the smallest size that failed, skip
++			 * sizes from there up, and try again every 64th time (memory may have freed up).
++			 */
++			static uint64_t contigFailMin = UINT64_MAX;
++			static uint32_t contigSkips;
++			if (mem == NULL && gpu_low && take <= (16u << 20) && (take < contigFailMin || (++contigSkips & 63) == 0)) {
+ 				mem = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 				    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMemoryPhysicallyContiguous, take,
+ 				    0x0000000FFFFFC000ull);
++				if (mem != NULL) {
++					contigFailMin = UINT64_MAX;
++				} else if (take < contigFailMin) {
++					contigFailMin = take;
++				}
+ 			}
+ 			if (mem == NULL) {
+ 				mem = IOBufferMemoryDescriptor::inTaskWithOptions(kernel_task,
