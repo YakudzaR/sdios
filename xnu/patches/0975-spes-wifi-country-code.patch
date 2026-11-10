@@ -1,0 +1,14 @@
+--- a/bsd/dev/redwood_apple80211.c
++++ b/bsd/dev/redwood_apple80211.c
+@@ -321,6 +321,11 @@
+ 
+ 		return give(request, &answer, sizeof(answer));
+ 	}
++	case 51: {                              /* the country code: wifid asks on every pass and was refused. Experiment: */
++		static const char cc[3] = { 'U', 'S', 0 };      /* answer it, to see if wifid then auto-joins; the radio's own channel list is unchanged */
++
++		return give(request, cc, sizeof(cc));
++	}
+ 	case 15:                                /* the mode: a station (APPLE80211_M_STA) */
+ 		request->req_val = 1;
+ 		return 0;
