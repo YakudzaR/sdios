@@ -382,6 +382,37 @@ static id my_fileurl(id cls, SEL _cmd, NSString *path, BOOL dir)
 	return ((id (*)(id, SEL, id, BOOL))orig_fileurl)(cls, _cmd, path, dir);
 }
 
+/*
+ * PosterBoard: -[PBFHomeScreenPreviewImageBuilder _imageForView:] builds an @{} with the rendered snapshot of the
+ * home screen view; without a working renderer that image is nil and NSDictionary throws (kills PosterBoard when
+ * Settings > Wallpaper or the lock screen editor asks for a preview). Return nil instead of throwing.
+ */
+static id my_imageForView(id self, SEL _cmd, id view)
+{
+	static int n;
+	if (n++ < 5) {
+		fprintf(stderr, "topaz-fix: PosterBoard: _imageForView: skipped (no snapshot)\n");
+	}
+	return nil;
+}
+
+static void *watch_poster(void *unused)
+{
+	for (int i = 0; i < 6000; i++) {
+		Class c = objc_getClass("PBFHomeScreenPreviewImageBuilder");
+		if (c != Nil) {
+			Method m = class_getInstanceMethod(c, sel_registerName("_imageForView:"));
+			if (m != NULL) {
+				method_setImplementation(m, (IMP)my_imageForView);
+			}
+			fprintf(stderr, "topaz-fix: PosterBoard: patched _imageForView: (%p)\n", (void *)m);
+			return NULL;
+		}
+		usleep(20000);
+	}
+	return NULL;
+}
+
 static void aegir_exc(NSException *e)
 {
 	fprintf(stderr, "topaz-fix: poster exception %s: %s\n", [[e name] UTF8String], [[e reason] UTF8String]);
@@ -407,6 +438,12 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	if (pn != NULL && (strcmp(pn, "AegirPoster") == 0 || strcmp(pn, "PosterBoard") == 0)) {
 		NSSetUncaughtExceptionHandler(aegir_exc);
 		fprintf(stderr, "topaz-fix: %s exception logger installed\n", pn);
+		if (strcmp(pn, "PosterBoard") == 0) {
+			pthread_t t6;
+			if (pthread_create(&t6, NULL, watch_poster, NULL) == 0) {
+				pthread_detach(t6);
+			}
+		}
 		return;
 	}
 	if (pn != NULL && strcmp(pn, "syncdefaultsd") == 0) {
