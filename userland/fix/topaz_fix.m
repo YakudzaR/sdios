@@ -413,6 +413,107 @@ static void *watch_poster(void *unused)
 	return NULL;
 }
 
+/*
+ * Wi-Fi auto-join helper (SpringBoard). wifid never joins a saved network by itself here (it scans and stops, and
+ * the join on a tap works). A minute after start: if no network is joined, ask MobileWiFi to join the saved network
+ * that was joined last (what Settings does on a tap). At most 8 tries, 20 s apart; stops once joined.
+ */
+typedef void *WFRef;
+static WFRef (*wf_mgr_create)(CFAllocatorRef, CFOptionFlags);
+static CFArrayRef (*wf_mgr_devices)(WFRef);
+static CFArrayRef (*wf_mgr_networks)(WFRef);
+static void (*wf_mgr_schedule)(WFRef, CFRunLoopRef, CFStringRef);
+static WFRef (*wf_dev_current)(WFRef);
+static int (*wf_dev_assoc)(WFRef, WFRef, void *, void *);
+static CFStringRef (*wf_net_ssid)(WFRef);
+static CFTypeRef (*wf_net_prop)(WFRef, CFStringRef);
+static WFRef wf_mgr;
+static int wf_tries;
+
+static void wf_cb(void *a, void *b, void *c, void *d, void *e)
+{
+	fprintf(stderr, "topaz-fix: wifi helper: join callback err/ptr %p %p\n", c, d);
+}
+
+static void wf_tick(CFRunLoopTimerRef timer, void *info)
+{
+	if (wf_tries >= 8) {
+		fprintf(stderr, "topaz-fix: wifi helper: giving up\n");
+		CFRunLoopTimerInvalidate(timer);
+		return;
+	}
+	CFArrayRef devs = wf_mgr_devices(wf_mgr);
+	if (devs == NULL || CFArrayGetCount(devs) < 1) {
+		fprintf(stderr, "topaz-fix: wifi helper: no wifi device yet\n");
+		return;
+	}
+	WFRef dev = (WFRef)CFArrayGetValueAtIndex(devs, 0);
+	if (wf_dev_current(dev) != NULL) {
+		fprintf(stderr, "topaz-fix: wifi helper: already joined, done\n");
+		CFRunLoopTimerInvalidate(timer);
+		return;
+	}
+	CFArrayRef nets = wf_mgr_networks(wf_mgr);
+	if (nets == NULL || CFArrayGetCount(nets) < 1) {
+		fprintf(stderr, "topaz-fix: wifi helper: no saved networks\n");
+		return;
+	}
+	WFRef best = NULL;
+	CFDateRef bestd = NULL;
+	for (CFIndex i = 0; i < CFArrayGetCount(nets); i++) {
+		WFRef n = (WFRef)CFArrayGetValueAtIndex(nets, i);
+		CFTypeRef d = wf_net_prop != NULL ? wf_net_prop(n, CFSTR("lastJoined")) : NULL;
+		if (best == NULL || (d != NULL && CFGetTypeID(d) == CFDateGetTypeID() &&
+		    (bestd == NULL || CFDateCompare((CFDateRef)d, bestd, NULL) == kCFCompareGreaterThan))) {
+			best = n;
+			bestd = (d != NULL && CFGetTypeID(d) == CFDateGetTypeID()) ? (CFDateRef)d : NULL;
+		}
+	}
+	wf_tries++;
+	CFStringRef ssid = wf_net_ssid != NULL ? wf_net_ssid(best) : NULL;
+	char name[64] = "?";
+	if (ssid != NULL) {
+		CFStringGetCString(ssid, name, sizeof(name), kCFStringEncodingUTF8);
+	}
+	fprintf(stderr, "topaz-fix: wifi helper: try %d, joining the saved network (%zu chars)\n", wf_tries, strlen(name));
+	int r = wf_dev_assoc(dev, best, (void *)wf_cb, NULL);
+	fprintf(stderr, "topaz-fix: wifi helper: AssociateAsync returned %d\n", r);
+}
+
+static void *wifi_helper(void *unused)
+{
+	sleep(60);
+	void *h = dlopen("/System/Library/PrivateFrameworks/MobileWiFi.framework/MobileWiFi", RTLD_NOW);
+	if (h == NULL) {
+		fprintf(stderr, "topaz-fix: wifi helper: no MobileWiFi\n");
+		return NULL;
+	}
+	*(void **)&wf_mgr_create = dlsym(h, "WiFiManagerClientCreate");
+	*(void **)&wf_mgr_devices = dlsym(h, "WiFiManagerClientCopyDevices");
+	*(void **)&wf_mgr_networks = dlsym(h, "WiFiManagerClientCopyNetworks");
+	*(void **)&wf_mgr_schedule = dlsym(h, "WiFiManagerClientScheduleWithRunLoop");
+	*(void **)&wf_dev_current = dlsym(h, "WiFiDeviceClientCopyCurrentNetwork");
+	*(void **)&wf_dev_assoc = dlsym(h, "WiFiDeviceClientAssociateAsync");
+	*(void **)&wf_net_ssid = dlsym(h, "WiFiNetworkGetSSID");
+	*(void **)&wf_net_prop = dlsym(h, "WiFiNetworkGetProperty");
+	fprintf(stderr, "topaz-fix: wifi helper: symbols %p %p %p %p %p %p %p\n", (void *)wf_mgr_create, (void *)wf_mgr_devices,
+	    (void *)wf_mgr_networks, (void *)wf_mgr_schedule, (void *)wf_dev_current, (void *)wf_dev_assoc, (void *)wf_net_ssid);
+	if (!wf_mgr_create || !wf_mgr_devices || !wf_mgr_networks || !wf_mgr_schedule || !wf_dev_current || !wf_dev_assoc) {
+		return NULL;
+	}
+	wf_mgr = wf_mgr_create(kCFAllocatorDefault, 0);
+	if (wf_mgr == NULL) {
+		fprintf(stderr, "topaz-fix: wifi helper: no manager\n");
+		return NULL;
+	}
+	wf_mgr_schedule(wf_mgr, CFRunLoopGetCurrent(), kCFRunLoopDefaultMode);
+	CFRunLoopTimerRef t = CFRunLoopTimerCreate(kCFAllocatorDefault, CFAbsoluteTimeGetCurrent() + 1, 20, 0, 0, wf_tick, NULL);
+	CFRunLoopAddTimer(CFRunLoopGetCurrent(), t, kCFRunLoopDefaultMode);
+	fprintf(stderr, "topaz-fix: wifi helper: running\n");
+	CFRunLoopRun();
+	return NULL;
+}
+
 static void aegir_exc(NSException *e)
 {
 	fprintf(stderr, "topaz-fix: poster exception %s: %s\n", [[e name] UTF8String], [[e reason] UTF8String]);
@@ -428,6 +529,10 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	const char *pn = getprogname();
 	if (pn != NULL && strcmp(pn, "SpringBoard") == 0) {
 		/* the probes (probe_camera, probe_camera2) crashed SpringBoard from a background thread: not started any more */
+		pthread_t t7;
+		if (pthread_create(&t7, NULL, wifi_helper, NULL) == 0) {
+			pthread_detach(t7);
+		}
 		return;
 	}
 	/*
