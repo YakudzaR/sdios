@@ -1,0 +1,13 @@
+--- a/iokit/Kernel/arm/SweetSurface.cpp
++++ b/iokit/Kernel/arm/SweetSurface.cpp
+@@ -1117,7 +1117,9 @@
+ 				    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMemoryPhysicallyContiguous, take,
+ 				    0x0000000FFFFFC000ull);
+ 				if (mem != NULL) {
+-					contigFailMin = UINT64_MAX;
++					if (take >= contigFailMin) {
++						contigFailMin = UINT64_MAX;     /* a retry of a size that failed worked: try everything again */
++					}
+ 				} else if (take < contigFailMin) {
+ 					contigFailMin = take;
+ 				}
