@@ -1,29 +1,3 @@
---- a/iokit/Kernel/arm/RedwoodGPU.cpp
-+++ b/iokit/Kernel/arm/RedwoodGPU.cpp
-@@ -788,13 +788,20 @@
- 		 * vm_page_find_contiguous lines in the log), and on spes it nearly always fails. After 4 failures
- 		 * in a row go straight to the GPU pool and only try the kernel's memory again every 64th buffer.
- 		 */
--		static uint32_t lowFails, lowSkips;
--		bool tryLow = topaz_gpu_midmem() && (lowFails < 4 || (++lowSkips & 63) == 0);
-+		static uint64_t lowFailMin = UINT64_MAX;        /* the smallest size that failed (a success of a small one must not hide it) */
-+		static uint32_t lowSkips;
-+		bool tryLow = topaz_gpu_midmem() && (size < lowFailMin || (++lowSkips & 63) == 0);
- 		IOBufferMemoryDescriptor * low = !tryLow ? NULL : IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
- 		    kIODirectionInOut | kIOMemoryKernelUserShared | kIOMemoryPhysicallyContiguous | kIOMapWriteCombineCache,
- 		    (vm_size_t) size, 0x00000000fffff000ull);
- 		if (tryLow) {
--			lowFails = low != NULL ? 0 : lowFails + 1;
-+			if (low != NULL) {
-+				if (size >= lowFailMin) {
-+					lowFailMin = UINT64_MAX;        /* a retry of a big one worked: try everything again */
-+				}
-+			} else if (size < lowFailMin) {
-+				lowFailMin = size;
-+			}
- 		}
- 		if (low != NULL) {
- 			IOLockLock(gGPULock);
 --- a/iokit/Kernel/arm/SweetSurface.cpp
 +++ b/iokit/Kernel/arm/SweetSurface.cpp
 @@ -1037,9 +1037,22 @@
