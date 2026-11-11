@@ -1,0 +1,24 @@
+--- a/osfmk/vm/vm_resident.c
++++ b/osfmk/vm/vm_resident.c
+@@ -6517,6 +6517,21 @@
+ 		    __func__, contig_pages, max_pnum, npages, (vm_object_offset_t)start_pnum << PAGE_SHIFT,
+ 		        scanned, yielded, dumped_run, stolen_pages, compressed_pages, vm_page_wire_count);
+ 
++		{
++			/* who asks (spes diagnostic): the first 40 failed searches print their call chain */
++			static int bt_printed;
++			if (zone_gc_called == 0 && bt_printed < 40) {
++				void *bt[12] = { 0 };
++				unsigned n = OSBacktrace(bt, 12);
++				bt_printed++;
++				printf("vm_page_find_contiguous: num=%d asked by:", contig_pages);
++				for (unsigned i = 0; i < n; i++) {
++					printf(" 0x%lx", (unsigned long)bt[i]);
++				}
++				printf("\n");
++			}
++		}
++
+ 		if (consider_buffer_cache_collect != NULL) {
+ 			(void)(*consider_buffer_cache_collect)(1);
+ 		}
