@@ -1,0 +1,28 @@
+--- a/iokit/Kernel/arm/TopazAdreno.cpp
++++ b/iokit/Kernel/arm/TopazAdreno.cpp
+@@ -332,11 +332,25 @@
+ 	if (!gpu_midmem) {
+ 		return kbuf_alloc_low(b, size);         /* (without --midmem such allocations come from the lower bank: phystokv panics) */
+ 	}
++	/*
++	 * A failed contiguous search scans every page and yields hundreds of times (the vm_page_find_contiguous
++	 * lines in the log). Remember the smallest size that failed, skip sizes from there up and go to the pool,
++	 * and try again every 64th time (memory may have freed up).
++	 */
++	static uint64_t failMin = UINT64_MAX;
++	static uint32_t skips;
++	if (size >= failMin && (++skips & 63) != 0) {
++		return kbuf_alloc_low(b, size);
++	}
+ 	b->md = IOBufferMemoryDescriptor::inTaskWithPhysicalMask(kernel_task,
+ 	    kIODirectionInOut | kIOMemoryPhysicallyContiguous | kIOMapWriteCombineCache, size, 0x00000000fffff000ull);
+ 	if (b->md == NULL) {
++		if (size < failMin) {
++			failMin = size;
++		}
+ 		return kbuf_alloc_low(b, size);         /* (an ADT without the middle bank: the pool) */
+ 	}
++	failMin = UINT64_MAX;
+ 	b->va = (uint8_t *)b->md->getBytesNoCopy();
+ 	b->pa = b->md->getPhysicalSegment(0, NULL, kIOMemoryMapperNone);
+ 	b->size = size;
