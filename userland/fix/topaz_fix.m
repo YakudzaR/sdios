@@ -514,6 +514,50 @@ static void *wifi_helper(void *unused)
 	return NULL;
 }
 
+/*
+ * Registrar (SpringBoard): apps copied into /Applications from the PC (tools/sweet-install-app.sh) are unknown to
+ * LaunchServices, so no icon appears. A minute after start (then every 20 s, 10 rounds) ask LaunchServices to
+ * register every /Applications/*.app whose bundle id begins with "com.topaz." and is not installed yet.
+ */
+static void *app_registrar(void *unused)
+{
+	sleep(40);
+	dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW);
+	for (int round = 0; round < 10; round++) {
+		@autoreleasepool {
+			Class wc = objc_getClass("LSApplicationWorkspace");
+			id w = wc != Nil ? ((id (*)(id, SEL))objc_msgSend)((id)wc, sel_registerName("defaultWorkspace")) : nil;
+			if (w == nil) {
+				fprintf(stderr, "topaz-fix: registrar: no LSApplicationWorkspace\n");
+				return NULL;
+			}
+			for (NSString *n in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:@"/Applications" error:nil]) {
+				if (![n hasSuffix:@".app"]) {
+					continue;
+				}
+				NSString *p = [@"/Applications" stringByAppendingPathComponent:n];
+				NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[p stringByAppendingPathComponent:@"Info.plist"]];
+				NSString *bid = [info objectForKey:@"CFBundleIdentifier"];
+				if (![bid hasPrefix:@"com.topaz."]) {
+					continue;
+				}
+				BOOL inst = ((BOOL (*)(id, SEL, id))objc_msgSend)(w, sel_registerName("applicationIsInstalled:"), bid);
+				if (inst) {
+					if (round == 0) {
+						fprintf(stderr, "topaz-fix: registrar: %s already registered\n", [bid UTF8String]);
+					}
+					continue;
+				}
+				BOOL ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(w, sel_registerName("registerApplication:"),
+				    [NSURL fileURLWithPath:p isDirectory:YES]);
+				fprintf(stderr, "topaz-fix: registrar: registerApplication %s -> %d\n", [bid UTF8String], (int)ok);
+			}
+		}
+		sleep(20);
+	}
+	return NULL;
+}
+
 static void aegir_exc(NSException *e)
 {
 	fprintf(stderr, "topaz-fix: poster exception %s: %s\n", [[e name] UTF8String], [[e reason] UTF8String]);
@@ -532,6 +576,10 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 		pthread_t t7;
 		if (pthread_create(&t7, NULL, wifi_helper, NULL) == 0) {
 			pthread_detach(t7);
+		}
+		pthread_t t8;
+		if (pthread_create(&t8, NULL, app_registrar, NULL) == 0) {
+			pthread_detach(t8);
 		}
 		return;
 	}
