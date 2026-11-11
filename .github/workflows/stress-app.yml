@@ -1,0 +1,48 @@
+name: stress-app
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [spes]
+    paths:
+      - "userland/stress/**"
+      - ".github/workflows/stress-app.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - name: Build
+        run: |
+          set -o pipefail
+          mkdir -p userland/stress/out/StressTest.app
+          (
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC=$(xcrun --sdk iphoneos -f clang)
+          "$CC" -target arm64-apple-ios16.0 -isysroot "$SDK" -O2 -fobjc-arc \
+            -framework UIKit -framework Foundation -framework QuartzCore \
+            -o userland/stress/out/StressTest.app/StressTest userland/stress/main.m
+          cp userland/stress/Info.plist userland/stress/out/StressTest.app/Info.plist
+          printf 'APPL????' > userland/stress/out/StressTest.app/PkgInfo
+          codesign --force -s - userland/stress/out/StressTest.app
+          file userland/stress/out/StressTest.app/StressTest
+          cd userland/stress/out && zip -qr StressTest.app.zip StressTest.app && ls -l StressTest.app.zip
+          ) 2>&1 | tee userland/stress/out/build.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: stress-test
+          path: userland/stress/out/StressTest.app.zip
+      - name: Publish to the builds-stress branch
+        if: always()
+        run: |
+          rm -rf /tmp/pub && mkdir /tmp/pub && cp userland/stress/out/StressTest.app.zip userland/stress/out/build.log /tmp/pub/ || true
+          cd /tmp/pub && git init -q && git config user.name ci && git config user.email ci@users.noreply.github.com
+          git add . && git commit -qm "StressTest app"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds-stress
