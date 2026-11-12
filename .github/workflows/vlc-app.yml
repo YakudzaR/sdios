@@ -1,0 +1,59 @@
+name: vlc-app
+
+# Builds VLC for iOS (github.com/videolan/vlc-ios, GPLv2) unsigned for arm64, strips extensions, ad-hoc signs it and
+# publishes VLC.app.zip as a release asset (too big for a branch) on the release "vlc-build".
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "vlc-ios commit or tag"
+        default: "955281478edb7bc37d75c990627cc833f423ecac"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 120
+    steps:
+      - name: Clone vlc-ios
+        run: |
+          git clone https://github.com/videolan/vlc-ios vlc-ios
+          cd vlc-ios && git checkout "${{ github.event.inputs.ref }}" && git log -1 --format='%H %s'
+      - name: Pods
+        working-directory: vlc-ios
+        run: |
+          pod install 2>&1 | tail -30
+      - name: Build
+        working-directory: vlc-ios
+        run: |
+          set -o pipefail
+          xcodebuild -workspace VLC.xcworkspace -scheme VLC-iOS-no-watch -configuration Release \
+            -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee ../xcodebuild.log | tail -60
+      - name: Package
+        run: |
+          APP=$(find vlc-ios/build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
+          echo "app: $APP"
+          [ -d "$APP" ] || { echo "no .app produced"; tail -150 xcodebuild.log; exit 1; }
+          rm -rf "$APP/PlugIns" "$APP/Watch"
+          plutil -p "$APP/Info.plist" | grep -E "CFBundleIdentifier|CFBundleExecutable|MinimumOSVersion|CFBundleShortVersionString"
+          for f in "$APP"/Frameworks/*.framework "$APP"/Frameworks/*.dylib; do [ -e "$f" ] && codesign --force -s - "$f"; done
+          codesign --force -s - "$APP"
+          file "$APP/$(plutil -extract CFBundleExecutable raw "$APP/Info.plist")"
+          mkdir -p out && rm -rf out/VLC.app && cp -R "$APP" out/VLC.app
+          cd out && zip -qr VLC.app.zip VLC.app && ls -l VLC.app.zip
+      - name: Publish release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view vlc-build >/dev/null 2>&1 || gh release create vlc-build --title "vlc-build" --notes "VLC for iOS built by CI (unsigned, ad-hoc signed)"
+          gh release upload vlc-build out/VLC.app.zip --clobber
+          gh release view vlc-build --json assets -q '.assets[]|"\(.name) \(.size) \(.url)"'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xcodebuild-log
+          path: xcodebuild.log
