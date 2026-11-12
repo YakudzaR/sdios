@@ -577,6 +577,21 @@ static id my_aegir_ub(id self, SEL _cmd, NSUInteger idx)
 	}
 }
 
+/* _renderOffscreenBackgroundWithRenderEncoder:frameBufferIndex: uses the uniform buffer straight away (null deref when it is nil):
+ * skip the pass when there is no buffer. */
+static void (*orig_aegir_bg)(id, SEL, id, NSUInteger);
+static void my_aegir_bg(id self, SEL _cmd, id enc, NSUInteger idx)
+{
+	static int n;
+	if (my_aegir_ub(self, sel_registerName("getOrCreateUniformBufferforFrameBufferIndex:"), idx) == nil) {
+		if (n++ < 5) {
+			fprintf(stderr, "topaz-fix: AegirPoster: background pass skipped (no uniform buffer)\n");
+		}
+		return;
+	}
+	orig_aegir_bg(self, _cmd, enc, idx);
+}
+
 static void *watch_aegir(void *unused)
 {
 	for (int i = 0; i < 6000; i++) {
@@ -586,7 +601,11 @@ static void *watch_aegir(void *unused)
 			if (m != NULL) {
 				orig_aegir_ub = (id (*)(id, SEL, NSUInteger))method_setImplementation(m, (IMP)my_aegir_ub);
 			}
-			fprintf(stderr, "topaz-fix: AegirPoster: patched getOrCreateUniformBuffer (%p)\n", (void *)m);
+			Method m2 = class_getInstanceMethod(c, sel_registerName("_renderOffscreenBackgroundWithRenderEncoder:frameBufferIndex:"));
+			if (m2 != NULL) {
+				orig_aegir_bg = (void (*)(id, SEL, id, NSUInteger))method_setImplementation(m2, (IMP)my_aegir_bg);
+			}
+			fprintf(stderr, "topaz-fix: AegirPoster: patched getOrCreateUniformBuffer (%p) background (%p)\n", (void *)m, (void *)m2);
 			return NULL;
 		}
 		usleep(20000);
