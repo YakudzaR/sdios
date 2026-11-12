@@ -152,8 +152,11 @@ static void *net_worker(void *arg)
 		NSURLSessionConfiguration *c = [NSURLSessionConfiguration ephemeralSessionConfiguration];
 		c.timeoutIntervalForRequest = 20;
 		NSURLSession *s = [NSURLSession sessionWithConfiguration:c];
-		NSURL *u = [NSURL URLWithString:@"https://speed.cloudflare.com/__down?bytes=1000000"];
+		NSArray *urls = @[@"https://speed.cloudflare.com/__down?bytes=1000000", @"http://speed.cloudflare.com/__down?bytes=1000000"];
+		unsigned n = 0;
 		for (;;) {
+			NSString *us = urls[n++ % 2];
+			NSURL *u = [NSURL URLWithString:us];
 			dispatch_semaphore_t sem = dispatch_semaphore_create(0);
 			[[s dataTaskWithURL:u completionHandler:^(NSData *d, NSURLResponse *r, NSError *e) {
 				if (e == nil && d.length >= 1000000) {
@@ -161,6 +164,7 @@ static void *net_worker(void *arg)
 					atomic_fetch_add(&g_net_bytes, d.length);
 				} else {
 					atomic_fetch_add(&g_net_fail, 1);
+					slog("net fail %s: %s (%ld) got %lu bytes", us.UTF8String, e.localizedDescription.UTF8String ?: "no error", (long)e.code, (unsigned long)d.length);
 				}
 				dispatch_semaphore_signal(sem);
 			}] resume];
