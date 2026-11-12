@@ -592,6 +592,16 @@ static void my_aegir_bg(id self, SEL _cmd, id enc, NSUInteger idx)
 	orig_aegir_bg(self, _cmd, enc, idx);
 }
 
+/* The uniform buffer never comes back here, and the scene pass dereferences it: skip the render call (void return only,
+ * arguments are not used so the viewport struct does not matter). The wallpaper stays blank, the process stays alive. */
+static void my_aegir_render_skip(id self, SEL _cmd)
+{
+	static int n;
+	if (n++ < 3) {
+		fprintf(stderr, "topaz-fix: AegirPoster: %s skipped\n", sel_getName(_cmd));
+	}
+}
+
 static void *watch_aegir(void *unused)
 {
 	for (int i = 0; i < 6000; i++) {
@@ -604,6 +614,15 @@ static void *watch_aegir(void *unused)
 			Method m2 = class_getInstanceMethod(c, sel_registerName("_renderOffscreenBackgroundWithRenderEncoder:frameBufferIndex:"));
 			if (m2 != NULL) {
 				orig_aegir_bg = (void (*)(id, SEL, id, NSUInteger))method_setImplementation(m2, (IMP)my_aegir_bg);
+			}
+			Method m3 = class_getInstanceMethod(c, sel_registerName("renderWithScene:viewport:commandBuffer:passDescriptor:"));
+			if (m3 != NULL) {
+				char *rt = method_copyReturnType(m3);
+				fprintf(stderr, "topaz-fix: AegirPoster: renderWithScene return type %s\n", rt);
+				if (strcmp(rt, "v") == 0) {
+					method_setImplementation(m3, (IMP)my_aegir_render_skip);
+				}
+				free(rt);
 			}
 			fprintf(stderr, "topaz-fix: AegirPoster: patched getOrCreateUniformBuffer (%p) background (%p)\n", (void *)m, (void *)m2);
 			return NULL;
