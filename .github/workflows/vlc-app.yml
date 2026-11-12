@@ -3,6 +3,10 @@ name: vlc-app
 # Builds VLC for iOS (github.com/videolan/vlc-ios, GPLv2) unsigned for arm64, strips extensions, ad-hoc signs it and
 # publishes VLC.app.zip as a release asset (too big for a branch) on the release "vlc-build".
 on:
+  push:
+    branches: [spes]
+    paths:
+      - ".github/workflows/vlc-app.yml"
   workflow_dispatch:
     inputs:
       ref:
@@ -20,7 +24,7 @@ jobs:
       - name: Clone vlc-ios
         run: |
           git clone https://github.com/videolan/vlc-ios vlc-ios
-          cd vlc-ios && git checkout "${{ github.event.inputs.ref }}" && git log -1 --format='%H %s'
+          cd vlc-ios && git checkout "${{ github.event.inputs.ref || '955281478edb7bc37d75c990627cc833f423ecac' }}" && git log -1 --format='%H %s'
       - name: Pods
         working-directory: vlc-ios
         run: |
