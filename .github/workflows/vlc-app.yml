@@ -25,6 +25,12 @@ jobs:
         run: |
           git clone https://github.com/videolan/vlc-ios vlc-ios
           cd vlc-ios && git checkout "${{ github.event.inputs.ref || '955281478edb7bc37d75c990627cc833f423ecac' }}" && git log -1 --format='%H %s'
+      - name: Xcode
+        run: |
+          ls -d /Applications/Xcode*.app; xcodebuild -version
+          NEW=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$NEW" ]; then sudo xcode-select -s "$NEW"; fi
+          xcodebuild -version
       - name: Pods
         working-directory: vlc-ios
         run: |
@@ -36,7 +42,7 @@ jobs:
           xcodebuild -workspace VLC.xcworkspace -scheme VLC-iOS-no-watch -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build 2>&1 | tee ../xcodebuild.log | tail -60
+            build > ../xcodebuild.log 2>&1 || { grep -a -n -B2 -A12 "error:\|actool\|Failed to" ../xcodebuild.log | grep -a -v "note: Disabling previews" | head -120; exit 65; }
       - name: Package
         run: |
           APP=$(find vlc-ios/build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
