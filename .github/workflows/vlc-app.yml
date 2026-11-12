@@ -1,7 +1,7 @@
 name: vlc-app
 
 # Builds VLC for iOS (github.com/videolan/vlc-ios, GPLv2) unsigned for arm64, strips extensions, ad-hoc signs it and
-# publishes VLC.app.zip as a release asset (too big for a branch) on the release "vlc-build".
+# publishes VLC.app.zip (about 40 MB) to the branch builds-vlc.
 on:
   push:
     branches: [spes]
@@ -62,13 +62,12 @@ jobs:
           file "$APP/$(plutil -extract CFBundleExecutable raw "$APP/Info.plist")"
           mkdir -p out && rm -rf out/VLC.app && cp -R "$APP" out/VLC.app
           cd out && zip -qr VLC.app.zip VLC.app && ls -l VLC.app.zip
-      - name: Publish release asset
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Publish to the builds-vlc branch
         run: |
-          gh release view vlc-build >/dev/null 2>&1 || gh release create vlc-build --title "vlc-build" --notes "VLC for iOS built by CI (unsigned, ad-hoc signed)"
-          gh release upload vlc-build out/VLC.app.zip --clobber
-          gh release view vlc-build --json assets -q '.assets[]|"\(.name) \(.size) \(.url)"'
+          rm -rf /tmp/pub && mkdir /tmp/pub && cp out/VLC.app.zip xcodebuild.log /tmp/pub/
+          cd /tmp/pub && git init -q && git config user.name ci && git config user.email ci@users.noreply.github.com
+          git add . && git commit -qm "VLC for iOS"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds-vlc
       - uses: actions/upload-artifact@v4
         if: always()
         with:
