@@ -9,6 +9,9 @@
  * IPHONE_SHARED_RESOURCES_DIRECTORY is not set in the process; the constructor sets it.
  */
 #import <Foundation/Foundation.h>
+#include <spawn.h>
+#include <sys/wait.h>
+extern char **environ;
 #import <objc/runtime.h>
 #import <objc/message.h>
 #include <strings.h>
@@ -551,6 +554,17 @@ static void *app_registrar(void *unused)
 				BOOL ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(w, sel_registerName("registerApplication:"),
 				    [NSURL fileURLWithPath:p isDirectory:YES]);
 				fprintf(stderr, "topaz-fix: registrar: registerApplication %s -> %d\n", [bid UTF8String], (int)ok);
+				if (!ok && access("/topaz/bin/lsreg", X_OK) == 0) {
+					/* the entitled helper tries every registration API and logs what each says (stderr + /var/mobile/lsreg.log) */
+					pid_t pid = 0;
+					const char *av[] = {"/topaz/bin/lsreg", [p fileSystemRepresentation], NULL};
+					int sp = posix_spawn(&pid, "/topaz/bin/lsreg", NULL, NULL, (char *const *)av, environ);
+					int status = 0;
+					if (sp == 0) {
+						waitpid(pid, &status, 0);
+					}
+					fprintf(stderr, "topaz-fix: registrar: spawned lsreg for %s: spawn %d status 0x%x\n", [bid UTF8String], sp, status);
+				}
 			}
 		}
 		sleep(20);

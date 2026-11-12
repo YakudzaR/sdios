@@ -1,0 +1,40 @@
+name: lsreg
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [spes]
+    paths:
+      - "userland/lsreg/**"
+      - ".github/workflows/lsreg.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - name: Build
+        run: |
+          set -o pipefail
+          mkdir -p userland/lsreg/out
+          (
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC=$(xcrun --sdk iphoneos -f clang)
+          "$CC" -target arm64-apple-ios16.0 -isysroot "$SDK" -O2 -fobjc-arc -framework Foundation \
+            -o userland/lsreg/out/lsreg userland/lsreg/main.m
+          codesign --force -s - --entitlements userland/lsreg/ent.plist userland/lsreg/out/lsreg
+          codesign -d --entitlements - userland/lsreg/out/lsreg | head -30
+          file userland/lsreg/out/lsreg
+          ) 2>&1 | tee userland/lsreg/out/build.log
+      - name: Publish to the builds-lsreg branch
+        if: always()
+        run: |
+          rm -rf /tmp/pub && mkdir /tmp/pub && cp userland/lsreg/out/lsreg userland/lsreg/out/build.log /tmp/pub/ || true
+          cd /tmp/pub && git init -q && git config user.name ci && git config user.email ci@users.noreply.github.com
+          git add . && git commit -qm "lsreg"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds-lsreg
