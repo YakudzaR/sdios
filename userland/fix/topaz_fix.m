@@ -541,8 +541,8 @@ static void *app_registrar(void *unused)
 				NSString *p = [@"/Applications" stringByAppendingPathComponent:n];
 				NSDictionary *info = [NSDictionary dictionaryWithContentsOfFile:[p stringByAppendingPathComponent:@"Info.plist"]];
 				NSString *bid = [info objectForKey:@"CFBundleIdentifier"];
-				if (![bid hasPrefix:@"com.topaz."]) {
-					continue;
+				if (bid == nil || [bid hasPrefix:@"com.apple."]) {
+					continue; /* Apple's own apps are the system's business; every other app in /Applications is registered */
 				}
 				BOOL inst = ((BOOL (*)(id, SEL, id))objc_msgSend)(w, sel_registerName("applicationIsInstalled:"), bid);
 				if (inst) {
@@ -554,6 +554,19 @@ static void *app_registrar(void *unused)
 				BOOL ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(w, sel_registerName("registerApplication:"),
 				    [NSURL fileURLWithPath:p isDirectory:YES]);
 				fprintf(stderr, "topaz-fix: registrar: registerApplication %s -> %d\n", [bid UTF8String], (int)ok);
+				if (!ok) {
+					/* what worked in the lsreg test: registerApplicationDictionary: with Info.plist + ApplicationType + Path */
+					NSMutableDictionary *d = [info mutableCopy];
+					d[@"ApplicationType"] = @"System";
+					d[@"Path"] = p;
+					d[@"IsDeletable"] = @NO;
+					SEL sd = sel_registerName("registerApplicationDictionary:");
+					if ([w respondsToSelector:sd]) {
+						BOOL r = ((BOOL (*)(id, SEL, id))objc_msgSend)(w, sd, d);
+						ok = ((BOOL (*)(id, SEL, id))objc_msgSend)(w, sel_registerName("applicationIsInstalled:"), bid);
+						fprintf(stderr, "topaz-fix: registrar: registerApplicationDictionary %s -> %d, installed %d\n", [bid UTF8String], (int)r, (int)ok);
+					}
+				}
 				if (!ok && access("/topaz/bin/lsreg", X_OK) == 0) {
 					/* the entitled helper tries every registration API and logs what each says (stderr + /var/mobile/lsreg.log) */
 					pid_t pid = 0;
