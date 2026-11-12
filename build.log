@@ -1,0 +1,32 @@
+Executable=/Users/runner/work/sdios/sdios/userland/lsreg/out/lsreg
+[Dict]
+	[Key] com.apple.lsapplicationworkspace.rebuildappdatabases
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.LaunchServices.registerApplication
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.MobileInstallationHelperService.allowed
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.coreservices.canmaplsdatabase
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.mobileinstall.allowedSPI
+	[Value]
+		[Array]
+			[String] Install
+			[String] Uninstall
+			[String] InstallForLaunchServices
+			[String] UninstallForLaunchServices
+			[String] Archive
+			[String] Restore
+			[String] Browse
+			[String] Lookup
+			[String] CheckCapabilities
+			[String] LookupCapabilities
+	[Key] com.apple.private.persona-mgmt
+	[Value]
+		[Bool] true
+	[Key] com.apple.private.security.no-container
+userland/lsreg/out/lsreg: Mach-O 64-bit executable arm64
