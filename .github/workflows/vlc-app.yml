@@ -35,6 +35,13 @@ jobs:
         working-directory: vlc-ios
         run: |
           pod install 2>&1 | tail -30
+      - name: Cache build
+        uses: actions/cache@v4
+        with:
+          path: vlc-ios/build
+          key: vlc-build-${{ github.event.inputs.ref || 'default' }}-${{ github.run_id }}
+          restore-keys: |
+            vlc-build-
       - name: Build
         working-directory: vlc-ios
         run: |
@@ -42,7 +49,7 @@ jobs:
           xcodebuild -workspace VLC.xcworkspace -scheme VLC-iOS-no-watch -configuration Release \
             -sdk iphoneos -destination 'generic/platform=iOS' -derivedDataPath build \
             ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
-            build > ../xcodebuild.log 2>&1 || { grep -a -n -B2 -A12 "error:\|actool\|Failed to" ../xcodebuild.log | grep -a -v "note: Disabling previews" | head -120; exit 65; }
+            build > ../xcodebuild.log 2>&1 || { grep -a -v "Disabling previews" ../xcodebuild.log | tail -80 | cut -c1-600; echo "-----actool"; grep -a -i -B3 -A10 "actool\|CompileAssetCatalog" ../xcodebuild.log | grep -a -v "Disabling previews" | tail -60 | cut -c1-600; exit 65; }
       - name: Package
         run: |
           APP=$(find vlc-ios/build/Build/Products/Release-iphoneos -maxdepth 1 -name '*.app' | head -1)
