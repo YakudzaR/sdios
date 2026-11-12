@@ -558,6 +558,42 @@ static void *app_registrar(void *unused)
 	return NULL;
 }
 
+/*
+ * AegirPoster (Astronomy wallpaper): NUNIAegirRenderer getOrCreateUniformBufferforFrameBufferIndex: makes an MTLBuffer and
+ * puts it in an array; here the buffer comes back nil, the array insert throws and the process aborts every ~5 s.
+ * Call the original inside @try; on an exception log it and return nil (no uniform buffer = nothing drawn, no abort).
+ */
+static id (*orig_aegir_ub)(id, SEL, NSUInteger);
+static id my_aegir_ub(id self, SEL _cmd, NSUInteger idx)
+{
+	static int n;
+	@try {
+		return orig_aegir_ub(self, _cmd, idx);
+	} @catch (NSException *e) {
+		if (n++ < 5) {
+			fprintf(stderr, "topaz-fix: AegirPoster: uniform buffer %lu failed (%s), skipped\n", (unsigned long)idx, [[e reason] UTF8String]);
+		}
+		return nil;
+	}
+}
+
+static void *watch_aegir(void *unused)
+{
+	for (int i = 0; i < 6000; i++) {
+		Class c = objc_getClass("NUNIAegirRenderer");
+		if (c != Nil) {
+			Method m = class_getInstanceMethod(c, sel_registerName("getOrCreateUniformBufferforFrameBufferIndex:"));
+			if (m != NULL) {
+				orig_aegir_ub = (id (*)(id, SEL, NSUInteger))method_setImplementation(m, (IMP)my_aegir_ub);
+			}
+			fprintf(stderr, "topaz-fix: AegirPoster: patched getOrCreateUniformBuffer (%p)\n", (void *)m);
+			return NULL;
+		}
+		usleep(20000);
+	}
+	return NULL;
+}
+
 static void aegir_exc(NSException *e)
 {
 	fprintf(stderr, "topaz-fix: poster exception %s: %s\n", [[e name] UTF8String], [[e reason] UTF8String]);
@@ -591,6 +627,12 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	if (pn != NULL && (strcmp(pn, "AegirPoster") == 0 || strcmp(pn, "PosterBoard") == 0)) {
 		NSSetUncaughtExceptionHandler(aegir_exc);
 		fprintf(stderr, "topaz-fix: %s exception logger installed\n", pn);
+		if (strcmp(pn, "AegirPoster") == 0) {
+			pthread_t t9;
+			if (pthread_create(&t9, NULL, watch_aegir, NULL) == 0) {
+				pthread_detach(t9);
+			}
+		}
 		if (strcmp(pn, "PosterBoard") == 0) {
 			pthread_t t6;
 			if (pthread_create(&t6, NULL, watch_poster, NULL) == 0) {
