@@ -67,6 +67,18 @@ static void *watch_photos(void *unused)
 				orig_photos = method_setImplementation(m, (IMP)my_photos);
 			}
 			fprintf(stderr, "topaz-fix: patched PLPrivacy (%p)\n", (void *)m);
+			/* list the access-related selectors of PLPrivacy (instance and class), to find the other checks */
+			for (int k = 0; k < 2; k++) {
+				unsigned cnt = 0;
+				Method *ml = class_copyMethodList(k == 0 ? c : object_getClass((id)c), &cnt);
+				for (unsigned j = 0; j < cnt; j++) {
+					const char *nm = sel_getName(method_getName(ml[j]));
+					if (strcasestr(nm, "access") || strcasestr(nm, "auth") || strcasestr(nm, "tcc") || strcasestr(nm, "allowed")) {
+						fprintf(stderr, "topaz-fix: PLPrivacy %c %s\n", k == 0 ? '-' : '+', nm);
+					}
+				}
+				free(ml);
+			}
 			return NULL;
 		}
 		usleep(2000);
@@ -829,6 +841,10 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 		pthread_t t10;
 		if (pthread_create(&t10, NULL, watch_phauth, NULL) == 0) {
 			pthread_detach(t10);
+		}
+		pthread_t t11;
+		if (pthread_create(&t11, NULL, watch_photos, NULL) == 0) {
+			pthread_detach(t11);
 		}
 		return;
 	}
