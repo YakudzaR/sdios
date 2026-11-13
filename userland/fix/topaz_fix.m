@@ -57,6 +57,18 @@ static uintptr_t my_photos(id self, SEL _cmd, uintptr_t scope)
 	return 0;
 }
 
+/* the status behind every PLPrivacy check (TCC values: 0 not determined, 1 restricted, 2 denied, 3 authorized): say authorized */
+static IMP orig_authstatus;
+static uintptr_t my_authstatus(id self, SEL _cmd, uintptr_t scope)
+{
+	static int n;
+	uintptr_t r = ((uintptr_t (*)(id, SEL, uintptr_t))orig_authstatus)(self, _cmd, scope);
+	if (n++ < 10) {
+		fprintf(stderr, "topaz-fix: PLPrivacy _authStatusForScope:%lu was %lu, returning 3\n", (unsigned long)scope, (unsigned long)r);
+	}
+	return 3;
+}
+
 static void *watch_photos(void *unused)
 {
 	for (int i = 0; i < 6000; i++) {
@@ -67,6 +79,15 @@ static void *watch_photos(void *unused)
 				orig_photos = method_setImplementation(m, (IMP)my_photos);
 			}
 			fprintf(stderr, "topaz-fix: patched PLPrivacy (%p)\n", (void *)m);
+			Method am = class_getInstanceMethod(c, sel_registerName("_authStatusForScope:"));
+			if (am != NULL) {
+				char *rt = method_copyReturnType(am);
+				if (rt != NULL && (strcmp(rt, "q") == 0 || strcmp(rt, "Q") == 0 || strcmp(rt, "i") == 0 || strcmp(rt, "I") == 0 || strcmp(rt, "Q") == 0)) {
+					orig_authstatus = method_setImplementation(am, (IMP)my_authstatus);
+				}
+				fprintf(stderr, "topaz-fix: PLPrivacy _authStatusForScope: return type %s, patched %d\n", rt != NULL ? rt : "?", orig_authstatus != NULL);
+				free(rt);
+			}
 			/* list the access-related selectors of PLPrivacy (instance and class), to find the other checks */
 			for (int k = 0; k < 2; k++) {
 				unsigned cnt = 0;
@@ -74,7 +95,8 @@ static void *watch_photos(void *unused)
 				for (unsigned j = 0; j < cnt; j++) {
 					const char *nm = sel_getName(method_getName(ml[j]));
 					if (strcasestr(nm, "access") || strcasestr(nm, "auth") || strcasestr(nm, "tcc") || strcasestr(nm, "allowed")) {
-						fprintf(stderr, "topaz-fix: PLPrivacy %c %s\n", k == 0 ? '-' : '+', nm);
+						const char *te = method_getTypeEncoding(ml[j]);
+						fprintf(stderr, "topaz-fix: PLPrivacy %c %s  [%s]\n", k == 0 ? '-' : '+', nm, te != NULL ? te : "?");
 					}
 				}
 				free(ml);
