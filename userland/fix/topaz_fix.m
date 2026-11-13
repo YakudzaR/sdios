@@ -10,6 +10,7 @@
  */
 #import <Foundation/Foundation.h>
 #include <spawn.h>
+#include <Block.h>
 #include <sys/wait.h>
 extern char **environ;
 #import <objc/runtime.h>
@@ -275,6 +276,95 @@ static id my_single(id cls, SEL _cmd)
 		fprintf(stderr, "topaz-fix: +[CIContext _singletonContext] returns nil (no GL)\n");
 	}
 	return nil;
+}
+
+/*
+ * Safari "Add to Photos" did nothing: PHPhotoLibrary's client-side permission (TCC photos, normally a prompt from
+ * SpringBoard) is never granted here. Answer "authorized" (PHAuthorizationStatusAuthorized = 3) for the status and request
+ * calls, and log what performChanges:completionHandler: ends with (success / error).
+ */
+static NSInteger my_ph_status(id self, SEL _cmd)
+{
+	static int n;
+	if (n++ < 5) {
+		fprintf(stderr, "topaz-fix: PHPhotoLibrary %s -> authorized\n", sel_getName(_cmd));
+	}
+	return 3;
+}
+
+static NSInteger my_ph_status_lvl(id self, SEL _cmd, NSInteger level)
+{
+	static int n;
+	if (n++ < 5) {
+		fprintf(stderr, "topaz-fix: PHPhotoLibrary %s(%ld) -> authorized\n", sel_getName(_cmd), (long)level);
+	}
+	return 3;
+}
+
+static void my_ph_request(id self, SEL _cmd, void (^handler)(NSInteger))
+{
+	fprintf(stderr, "topaz-fix: PHPhotoLibrary %s -> authorized\n", sel_getName(_cmd));
+	if (handler != NULL) {
+		handler(3);
+	}
+}
+
+static void my_ph_request_lvl(id self, SEL _cmd, NSInteger level, void (^handler)(NSInteger))
+{
+	fprintf(stderr, "topaz-fix: PHPhotoLibrary %s(%ld) -> authorized\n", sel_getName(_cmd), (long)level);
+	if (handler != NULL) {
+		handler(3);
+	}
+}
+
+static void (*orig_ph_perform)(id, SEL, void (^)(void), void (^)(BOOL, NSError *));
+static void my_ph_perform(id self, SEL _cmd, void (^changes)(void), void (^done)(BOOL, NSError *))
+{
+	void (^d2)(BOOL, NSError *) = done != NULL ? Block_copy(done) : NULL;
+	fprintf(stderr, "topaz-fix: PHPhotoLibrary performChanges called\n");
+	orig_ph_perform(self, _cmd, changes, ^(BOOL ok, NSError *e) {
+		fprintf(stderr, "topaz-fix: PHPhotoLibrary performChanges finished: ok %d error %s\n", (int)ok,
+		    e != nil ? [[e description] UTF8String] : "none");
+		if (d2 != NULL) {
+			d2(ok, e);
+			Block_release(d2);
+		}
+	});
+}
+
+static void *watch_phauth(void *unused)
+{
+	dlopen("/System/Library/Frameworks/Photos.framework/Photos", RTLD_NOW);
+	for (int i = 0; i < 6000; i++) {
+		Class c = objc_getClass("PHPhotoLibrary");
+		if (c != Nil) {
+			Class mc = object_getClass((id)c);
+			Method m1 = class_getInstanceMethod(mc, sel_registerName("authorizationStatus"));
+			Method m2 = class_getInstanceMethod(mc, sel_registerName("authorizationStatusForAccessLevel:"));
+			Method m3 = class_getInstanceMethod(mc, sel_registerName("requestAuthorization:"));
+			Method m4 = class_getInstanceMethod(mc, sel_registerName("requestAuthorizationForAccessLevel:handler:"));
+			Method m5 = class_getInstanceMethod(c, sel_registerName("performChanges:completionHandler:"));
+			if (m1 != NULL) {
+				method_setImplementation(m1, (IMP)my_ph_status);
+			}
+			if (m2 != NULL) {
+				method_setImplementation(m2, (IMP)my_ph_status_lvl);
+			}
+			if (m3 != NULL) {
+				method_setImplementation(m3, (IMP)my_ph_request);
+			}
+			if (m4 != NULL) {
+				method_setImplementation(m4, (IMP)my_ph_request_lvl);
+			}
+			if (m5 != NULL) {
+				orig_ph_perform = (void (*)(id, SEL, void (^)(void), void (^)(BOOL, NSError *)))method_setImplementation(m5, (IMP)my_ph_perform);
+			}
+			fprintf(stderr, "topaz-fix: patched PHPhotoLibrary (%p %p %p %p %p)\n", (void *)m1, (void *)m2, (void *)m3, (void *)m4, (void *)m5);
+			return NULL;
+		}
+		usleep(20000);
+	}
+	return NULL;
 }
 
 static void *watch_ci(void *unused)
@@ -735,6 +825,10 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 		pthread_t t4;
 		if (pthread_create(&t4, NULL, watch_ci, NULL) == 0) {
 			pthread_detach(t4);
+		}
+		pthread_t t10;
+		if (pthread_create(&t10, NULL, watch_phauth, NULL) == 0) {
+			pthread_detach(t10);
 		}
 		return;
 	}
