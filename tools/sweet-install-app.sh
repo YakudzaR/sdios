@@ -31,6 +31,25 @@ for a in $APPS; do
   find "$M/Applications/$a" -type f -exec chmod 644 {} +
   exe=$(/usr/bin/python3 -c "import plistlib,sys;print(plistlib.load(open('$T/$a/Info.plist','rb'))['CFBundleExecutable'])")
   chmod 755 "$M/Applications/$a/$exe"
+  # every other program in the bundle (frameworks, dylibs, helper executables) must be executable too: find them by Mach-O magic
+  /usr/bin/python3 - "$M/Applications/$a" <<'PYEOF'
+import os, sys
+magic = (b"\xcf\xfa\xed\xfe", b"\xca\xfe\xba\xbe", b"\xfe\xed\xfa\xcf")
+n = 0
+for root, _, files in os.walk(sys.argv[1]):
+    for f in files:
+        p = os.path.join(root, f)
+        if os.path.islink(p):
+            continue
+        try:
+            with open(p, "rb") as fh:
+                if fh.read(4) in magic:
+                    os.chmod(p, 0o755)
+                    n += 1
+        except OSError:
+            pass
+print("made %d Mach-O files executable" % n)
+PYEOF
   chown -R 0:0 "$M/Applications/$a"
   ls -l "$M/Applications/$a"
 done
