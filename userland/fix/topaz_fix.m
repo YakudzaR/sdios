@@ -853,6 +853,14 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 		if (pthread_create(&t5, NULL, watch_search, NULL) == 0) {
 			pthread_detach(t5);
 		}
+		/* the Photos app got "restricted" from PLPrivacy too (library listed as empty): same permission fixes as Safari */
+		pthread_t t12, t13;
+		if (pthread_create(&t12, NULL, watch_phauth, NULL) == 0) {
+			pthread_detach(t12);
+		}
+		if (pthread_create(&t13, NULL, watch_photos, NULL) == 0) {
+			pthread_detach(t13);
+		}
 		return;
 	}
 	if (pn != NULL && strcmp(pn, "MobileSafari") == 0) {
