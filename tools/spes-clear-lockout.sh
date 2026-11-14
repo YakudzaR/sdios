@@ -1,7 +1,7 @@
 #!/bin/bash
-# Reset SpringBoard's saved failed-passcode counter (SBDeviceLockFailedAttempts) on the iOS root on the SD card.
+# Reset SpringBoard's saved failed-passcode counter and lockout time (SBDeviceLockFailedAttempts, SBDeviceLockBlockTime..., SBDeviceLockBlocked) on the iOS root on the SD card.
 #   sudo bash tools/spes-clear-lockout.sh /dev/sdb1     (the 27 GiB 0xAF partition, NOT the disk)
-# fsck.hfsplus, mount read-write, back up com.apple.springboard.plist next to itself, set that one key to 0,
+# fsck.hfsplus, mount read-write, back up com.apple.springboard.plist next to itself, set those keys to 0/removed,
 # unmount, fsck again. Nothing else is touched.
 set -euo pipefail
 PART=${1:?partition, e.g. /dev/sdb1}
@@ -24,6 +24,8 @@ fmt = plistlib.FMT_BINARY if raw[:6] == b'bplist' else plistlib.FMT_XML
 d = plistlib.loads(raw)
 print('SBDeviceLockFailedAttempts was', d.get('SBDeviceLockFailedAttempts'))
 d['SBDeviceLockFailedAttempts'] = 0
+print('SBDeviceLockBlockTimeIntervalSinceReferenceDate was', d.pop('SBDeviceLockBlockTimeIntervalSinceReferenceDate', None))
+d['SBDeviceLockBlocked'] = False
 open(p, 'wb').write(plistlib.dumps(d, fmt=fmt))
 print('now', plistlib.loads(open(p, 'rb').read()).get('SBDeviceLockFailedAttempts'))
 PY
