@@ -690,12 +690,53 @@ static void ipa_scan_dir(NSString *dir)
 	}
 }
 
+/*
+ * Uninstall requests from the Store app: /var/mobile/Media/Install/uninstall-<bundle id>.req holds the app path. Unregister
+ * the app from LaunchServices (from here, it needs the app still on disk), then let the setuid helper delete it.
+ */
+static void uninstall_scan(void)
+{
+	NSFileManager *fm = [NSFileManager defaultManager];
+	NSString *dir = @"/var/mobile/Media/Install";
+	for (NSString *n in [fm contentsOfDirectoryAtPath:dir error:nil]) {
+		if (![n hasPrefix:@"uninstall-"] || ![n hasSuffix:@".req"]) {
+			continue;
+		}
+		NSString *rp = [dir stringByAppendingPathComponent:n];
+		NSString *app = [[NSString stringWithContentsOfFile:rp encoding:NSUTF8StringEncoding error:nil]
+		    stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+		BOOL okpath = app.length > 14 && [app hasPrefix:@"/Applications/"] && [app hasSuffix:@".app"] && ![app containsString:@".."];
+		if (okpath) {
+			Class wc = objc_getClass("LSApplicationWorkspace");
+			id w = wc != Nil ? ((id (*)(id, SEL))objc_msgSend)((id)wc, sel_registerName("defaultWorkspace")) : nil;
+			SEL us = sel_registerName("unregisterApplication:");
+			if (w != nil && [w respondsToSelector:us]) {
+				BOOL r = ((BOOL (*)(id, SEL, id))objc_msgSend)(w, us, [NSURL fileURLWithPath:app isDirectory:YES]);
+				fprintf(stderr, "topaz-fix: uninstall: unregisterApplication %s -> %d\n", [app UTF8String], (int)r);
+			}
+			pid_t pid = 0;
+			const char *av[] = {"/topaz/bin/topaz-install", "--uninstall", [app fileSystemRepresentation], NULL};
+			int sp = posix_spawn(&pid, "/topaz/bin/topaz-install", NULL, NULL, (char *const *)av, environ);
+			int status = 0;
+			if (sp == 0) {
+				waitpid(pid, &status, 0);
+			}
+			fprintf(stderr, "topaz-fix: uninstall: %s -> spawn %d exit status 0x%x\n", [app UTF8String], sp, status);
+		} else {
+			fprintf(stderr, "topaz-fix: uninstall: ignoring request %s (bad path)\n", [n UTF8String]);
+		}
+		[fm moveItemAtPath:rp toPath:[rp stringByAppendingString:@".done"] error:nil];
+		[fm removeItemAtPath:[rp stringByAppendingString:@".done"] error:nil];
+	}
+}
+
 static void ipa_scan(void)
 {
 	if (access("/topaz/bin/topaz-install", X_OK) != 0) {
 		return;
 	}
 	NSFileManager *fm = [NSFileManager defaultManager];
+	uninstall_scan();
 	ipa_scan_dir(@"/var/mobile/Media/Install");
 	ipa_scan_dir(@"/var/mobile/Media/Downloads");
 	NSString *root = @"/var/mobile/Containers/Data/Application";

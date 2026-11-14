@@ -1,0 +1,44 @@
+name: store-app
+
+on:
+  push:
+    branches: [spes]
+    paths:
+      - "userland/store/**"
+      - ".github/workflows/store-app.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref }}
+      - name: Build
+        run: |
+          set -o pipefail
+          mkdir -p userland/store/out/Store.app userland/store/out/ipa/Payload
+          (
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC=$(xcrun --sdk iphoneos -f clang)
+          "$CC" -target arm64-apple-ios16.0 -isysroot "$SDK" -O2 -fobjc-arc -framework UIKit -framework Foundation \
+            -o userland/store/out/Store.app/Store userland/store/main.m
+          cp userland/store/Info.plist userland/store/out/Store.app/Info.plist
+          printf 'APPL????' > userland/store/out/Store.app/PkgInfo
+          codesign --force -s - userland/store/out/Store.app
+          file userland/store/out/Store.app/Store
+          cp -R userland/store/out/Store.app userland/store/out/ipa/Payload/
+          (cd userland/store/out/ipa && zip -qr ../Store.ipa Payload)
+          ls -l userland/store/out/Store.ipa
+          ) 2>&1 | tee userland/store/out/build.log
+      - name: Publish to the builds-store branch
+        if: always()
+        run: |
+          rm -rf /tmp/pub && mkdir /tmp/pub && cp userland/store/out/Store.ipa userland/store/out/build.log /tmp/pub/ || true
+          cd /tmp/pub && git init -q && git config user.email ci@users.noreply.github.com && git config user.name ci
+          git add . && git commit -qm "Store app"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}" HEAD:refs/heads/builds-store

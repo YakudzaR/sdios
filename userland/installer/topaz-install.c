@@ -503,6 +503,42 @@ static int read_info(const char *plist, char *bid, size_t bidsz, char *exe, size
 #endif
 }
 
+/* topaz-install --uninstall /Applications/X.app : remove one installed app (path checked, com.apple.* refused) */
+static int do_uninstall(const char *path)
+{
+	const char *prefix = "/Applications/";
+#ifndef __APPLE__
+	if (getenv("TOPAZ_TEST_PREFIX")) {
+		prefix = getenv("TOPAZ_TEST_PREFIX");
+	}
+#endif
+	size_t pl = strlen(prefix), n = strlen(path);
+	if (strncmp(path, prefix, pl) != 0 || n < pl + 5 || strcmp(path + n - 4, ".app") != 0 || strstr(path, "..") != NULL ||
+	    strchr(path + pl, '/') != NULL || path[pl] == '.') {
+		say("FAILED: refusing to uninstall %s (not a single .app directly in %s)", path, prefix);
+		return 20;
+	}
+	char plist[4096], bid[256], exe[256], minos[32];
+	snprintf(plist, sizeof plist, "%s/Info.plist", path);
+	if (read_info(plist, bid, sizeof bid, exe, sizeof exe, minos, sizeof minos) != 0) {
+		say("FAILED: cannot read %s", plist);
+		return 21;
+	}
+	if (!strncmp(bid, "com.apple.", 10)) {
+		say("FAILED: refusing to uninstall com.apple.* (%s)", bid);
+		return 22;
+	}
+	rmtree(path);
+	sync();
+	struct stat st;
+	if (lstat(path, &st) == 0) {
+		say("FAILED: %s could not be removed completely", path);
+		return 23;
+	}
+	say("UNINSTALLED %s (%s)", bid, path);
+	return 0;
+}
+
 static void finish_ipa(const char *ipa, int ok)
 {
 	char n[4096];
@@ -515,6 +551,24 @@ int main(int argc, char **argv)
 	if (argc < 2) {
 		fprintf(stderr, "usage: topaz-install App.ipa [applications-dir]\n");
 		return 2;
+	}
+	if (!strcmp(argv[1], "--uninstall")) {
+		if (argc < 3) {
+			fprintf(stderr, "usage: topaz-install --uninstall /Applications/X.app\n");
+			return 2;
+		}
+		mkdir_p("/var/mobile/Media/Install", 0777);
+		g_log = fopen("/var/mobile/Media/Install/status.log", "a");
+		if (g_log) {
+			fchmod(fileno(g_log), 0666);
+		}
+		say("uninstall %s (uid %d euid %d)", argv[2], (int)getuid(), (int)geteuid());
+		if (geteuid() != 0) {
+			say("not root: the setuid bit was not honoured");
+			return 3;
+		}
+		setuid(0);
+		return do_uninstall(argv[2]);
 	}
 	if (argc > 2) {
 		g_apps = argv[2];
