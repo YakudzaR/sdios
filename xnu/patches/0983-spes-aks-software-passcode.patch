@@ -1,0 +1,140 @@
+From: Claude <noreply@anthropic.com>
+Subject: [PATCH] spes: AppleKeyStore software passcode (change_secret, unlock_device, lock)
+
+diff --git a/iokit/Kernel/arm/SweetKeyStore.cpp b/iokit/Kernel/arm/SweetKeyStore.cpp
+index f760d57..de4fabb 100644
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -40,6 +40,7 @@ enum {
+ 	kAKSUnlockBag        = 12,
+ 	kAKSLockBag          = 13,
+ 	kAKSGetSystem        = 14,
++	kAKSChangeSecret     = 15,
+ 	kAKSGetDeviceState   = 17,
+ 	kAKSGetExtDeviceState = 35,     /* aks_get_extended_device_state */
+ 	kAKSAssertHold       = 26,
+@@ -137,6 +138,46 @@ sweet_aks_der_pair(uint8_t *p, const char *key, uint8_t value)
+ 	return n;
+ }
+ 
++/*
++ * Software passcode (no SEP): the passcode lives in kernel memory only, so it is gone after a reboot.
++ * selector 15 (change_secret): scalars handle, ?, ?, old pointer, old length, new pointer, new length (pointers in the
++ * caller's address space); selector 9 (unlock_device): handle, pointer, length. A one byte NUL or an empty secret
++ * means "no passcode".
++ */
++extern "C" int sweet_copyin(uint64_t uaddr, void *kaddr, size_t len) __asm__("_copyin");
++#define SWEET_AKS_PASS_MAX 64
++static uint8_t g_pass[SWEET_AKS_PASS_MAX];
++static uint32_t g_pass_len;
++static bool g_pass_set;
++static uint8_t g_locked;
++
++static bool
++sweet_aks_read_secret(uint64_t uaddr, uint64_t len, uint8_t *out, uint32_t *outlen)
++{
++	if (len == 0) {
++		*outlen = 0;
++		return true;
++	}
++	if (len > SWEET_AKS_PASS_MAX || sweet_copyin(uaddr, out, (size_t)len) != 0) {
++		return false;
++	}
++	if (len == 1 && out[0] == 0) {
++		*outlen = 0;
++		return true;
++	}
++	*outlen = (uint32_t)len;
++	return true;
++}
++
++static bool
++sweet_aks_secret_matches(const uint8_t *s, uint32_t len)
++{
++	if (!g_pass_set) {
++		return len == 0;
++	}
++	return len == g_pass_len && memcmp(s, g_pass, len) == 0;
++}
++
+ /*
+  * Device state (selector 17): a DER SET of key/INTEGER pairs that libaks
+  * decode_extended_state reads: ss state, sls lock state (MKBGetDeviceLockState:
+@@ -146,11 +187,11 @@ sweet_aks_der_pair(uint8_t *p, const char *key, uint8_t value)
+ static IOReturn
+ sweet_aks_device_state(IOExternalMethodArguments *args)
+ {
+-	static const struct {
++	struct {
+ 		const char *key;
+ 		uint8_t value;
+ 	} fields[] = {
+-		{ "ss", SWEET_AKS_LOCK_STATE }, { "sls", 0 }, { "sb", 0 }, { "sfa", 0 },
++		{ "ss", SWEET_AKS_LOCK_STATE }, { "sls", g_locked }, { "sb", 0 }, { "sfa", 0 },
+ 		{ "sgs", 0 }, { "sas", 0 }, { "sgpe", 0 }, { "srcd", 0 },
+ 	};
+ 	uint8_t buf[128];
+@@ -213,9 +254,7 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 	case kAKSOpen:
+ 	case kAKSUnloadBag:
+ 	case kAKSSetSystem:
+-	case kAKSUnlockDevice:
+ 	case kAKSUnlockBag:
+-	case kAKSLockBag:
+ 	case kAKSAssertHold:
+ 	case kAKSAssertDrop:
+ 	case kAKSAssertConsume:
+@@ -223,6 +262,53 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 	case kAKSNotifyStateSet:
+ 		args->scalarOutputCount = 0;
+ 		break;
++	case kAKSUnlockDevice: {
++		uint8_t sec[SWEET_AKS_PASS_MAX];
++		uint32_t sl = 0;
++		args->scalarOutputCount = 0;
++		if (in_scalars < 3 || !sweet_aks_read_secret(args->scalarInput[1], args->scalarInput[2], sec, &sl)) {
++			ret = kIOReturnBadArgument;
++		} else if (!sweet_aks_secret_matches(sec, sl)) {
++			ret = kIOReturnNotPermitted;
++		} else {
++			g_locked = 0;
++		}
++		break;
++	}
++	case kAKSLockBag:
++		args->scalarOutputCount = 0;
++		if (g_pass_set) {
++			g_locked = 1;
++		}
++		break;
++	case kAKSChangeSecret: {
++		uint8_t oldsec[SWEET_AKS_PASS_MAX], newsec[SWEET_AKS_PASS_MAX];
++		uint32_t ol = 0, nl = 0;
++		if (in_scalars < 7 || !sweet_aks_read_secret(args->scalarInput[3], args->scalarInput[4], oldsec, &ol) ||
++		    !sweet_aks_read_secret(args->scalarInput[5], args->scalarInput[6], newsec, &nl)) {
++			ret = kIOReturnBadArgument;
++			break;
++		}
++		if (!sweet_aks_secret_matches(oldsec, ol)) {
++			ret = kIOReturnNotPermitted;
++			break;
++		}
++		if (nl == 0) {
++			g_pass_set = false;
++			g_pass_len = 0;
++			g_locked = 0;
++		} else {
++			memcpy(g_pass, newsec, nl);
++			g_pass_len = nl;
++			g_pass_set = true;
++		}
++		if (out_scalars >= 1) {
++			args->scalarOutput[0] = 0;
++			args->scalarOutputCount = 1;
++		}
++		IOLog("SWEET AKS: passcode now %s (%u bytes)\n", g_pass_set ? "set" : "off", g_pass_len);
++		break;
++	}
+ 	case kAKSGetSystem:
+ 		if (out_scalars < 1) {
+ 			ret = kIOReturnBadArgument;
