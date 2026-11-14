@@ -654,22 +654,11 @@ static void *wifi_helper(void *unused)
  * /Applications; the registrar then registers the new app. The helper renames the file to .done or .failed.
  */
 static NSMutableDictionary *g_ipa_sizes;
-static void ipa_try(NSString *path)
+static NSMutableSet *g_ipa_seen;
+
+/* run the setuid helper on one ipa and log the result */
+static void ipa_install_now(NSString *path)
 {
-	NSDictionary *at = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
-	NSNumber *sz = [at objectForKey:NSFileSize];
-	if (sz == nil || [sz unsignedLongLongValue] == 0) {
-		return;
-	}
-	if (g_ipa_sizes == nil) {
-		g_ipa_sizes = [[NSMutableDictionary alloc] init];
-	}
-	NSNumber *prev = [g_ipa_sizes objectForKey:path];
-	[g_ipa_sizes setObject:sz forKey:path];
-	if (prev == nil || ![prev isEqualToNumber:sz]) {
-		fprintf(stderr, "topaz-fix: installer: found %s (%llu bytes), waiting for the size to settle\n", [path UTF8String], [sz unsignedLongLongValue]);
-		return;
-	}
 	pid_t pid = 0;
 	const char *av[] = {"/topaz/bin/topaz-install", [path fileSystemRepresentation], NULL};
 	int sp = posix_spawn(&pid, "/topaz/bin/topaz-install", NULL, NULL, (char *const *)av, environ);
@@ -678,7 +667,62 @@ static void ipa_try(NSString *path)
 		waitpid(pid, &status, 0);
 	}
 	fprintf(stderr, "topaz-fix: installer: %s -> spawn %d exit status 0x%x\n", [path UTF8String], sp, status);
+}
+
+/* an .ipa was found: by default only log it (the Store app lists it and asks for an install request);
+ * with the marker file /var/mobile/Media/Install/auto it is installed automatically once its size stopped changing */
+static void ipa_try(NSString *path)
+{
+	NSDictionary *at = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+	NSNumber *sz = [at objectForKey:NSFileSize];
+	if (sz == nil || [sz unsignedLongLongValue] == 0) {
+		return;
+	}
+	if (access("/var/mobile/Media/Install/auto", F_OK) != 0) {
+		if (g_ipa_seen == nil) {
+			g_ipa_seen = [[NSMutableSet alloc] init];
+		}
+		if (![g_ipa_seen containsObject:path]) {
+			[g_ipa_seen addObject:path];
+			fprintf(stderr, "topaz-fix: installer: found %s (%llu bytes), waiting for an install request from the Store app\n", [path UTF8String], [sz unsignedLongLongValue]);
+		}
+		return;
+	}
+	if (g_ipa_sizes == nil) {
+		g_ipa_sizes = [[NSMutableDictionary alloc] init];
+	}
+	NSNumber *prev = [g_ipa_sizes objectForKey:path];
+	[g_ipa_sizes setObject:sz forKey:path];
+	if (prev == nil || ![prev isEqualToNumber:sz]) {
+		fprintf(stderr, "topaz-fix: installer: found %s (%llu bytes), auto mode: waiting for the size to settle\n", [path UTF8String], [sz unsignedLongLongValue]);
+		return;
+	}
+	ipa_install_now(path);
 	[g_ipa_sizes removeObjectForKey:path];
+}
+
+/* install requests from the Store app: /var/mobile/Media/Install/install-<id>.req holds the ipa path */
+static void install_scan(void)
+{
+	NSFileManager *fm = [NSFileManager defaultManager];
+	NSString *dir = @"/var/mobile/Media/Install";
+	for (NSString *n in [fm contentsOfDirectoryAtPath:dir error:nil]) {
+		if (![n hasPrefix:@"install-"] || ![n hasSuffix:@".req"]) {
+			continue;
+		}
+		NSString *rp = [dir stringByAppendingPathComponent:n];
+		NSString *ipa = [[NSString stringWithContentsOfFile:rp encoding:NSUTF8StringEncoding error:nil]
+		    stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+		BOOL ok = ipa.length > 10 && [ipa hasPrefix:@"/var/mobile/"] && [[ipa pathExtension] caseInsensitiveCompare:@"ipa"] == NSOrderedSame &&
+		    ![ipa containsString:@".."] && [fm fileExistsAtPath:ipa];
+		if (ok) {
+			fprintf(stderr, "topaz-fix: installer: install request for %s\n", [ipa UTF8String]);
+			ipa_install_now(ipa);
+		} else {
+			fprintf(stderr, "topaz-fix: installer: ignoring request %s (bad or missing file)\n", [n UTF8String]);
+		}
+		[fm removeItemAtPath:rp error:nil];
+	}
 }
 
 static void ipa_scan_dir(NSString *dir)
@@ -737,6 +781,7 @@ static void ipa_scan(void)
 	}
 	NSFileManager *fm = [NSFileManager defaultManager];
 	uninstall_scan();
+	install_scan();
 	ipa_scan_dir(@"/var/mobile/Media/Install");
 	ipa_scan_dir(@"/var/mobile/Media/Downloads");
 	NSString *root = @"/var/mobile/Containers/Data/Application";

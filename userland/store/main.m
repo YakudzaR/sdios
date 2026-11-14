@@ -1,9 +1,9 @@
 /*
  * Store: shows what the on-device IPA installer (userland/installer, watcher in libtopaz-fix.dylib) has done.
  *   - Installed apps: every app in /Applications whose bundle id is not com.apple.* (tap = open, swipe = uninstall).
- *   - Waiting: .ipa files that the watcher has found but not installed yet.
+ *   - Waiting: .ipa files found in the watched folders; tap one to install it (nothing installs on its own).
  *   - Install log: the end of /var/mobile/Media/Install/status.log, newest first (INSTALLED / FAILED / WARNING).
- * Uninstall is a request file (/var/mobile/Media/Install/uninstall-<bundle id>.req containing the app path): the watcher
+ * Install and uninstall are request files (/var/mobile/Media/Install/install-<id>.req holds the ipa path). Uninstall is a request file (/var/mobile/Media/Install/uninstall-<bundle id>.req containing the app path): the watcher
  * in SpringBoard unregisters the app and the setuid helper deletes it, about 20 s later. The app itself needs no root.
  */
 #import <UIKit/UIKit.h>
@@ -22,7 +22,7 @@ static NSString *const kDir = @"/var/mobile/Media/Install";
 
 @interface StoreVC : UITableViewController
 @property (nonatomic, strong) NSArray<AppEntry *> *apps;
-@property (nonatomic, strong) NSArray<NSString *> *pending;
+@property (nonatomic, strong) NSArray<NSDictionary *> *pending;
 @property (nonatomic, strong) NSArray<NSAttributedString *> *logLines;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSNumber *> *sizes;
 @property (nonatomic, strong) NSTimer *timer;
@@ -106,7 +106,10 @@ static NSString *human(unsigned long long b)
 		for (NSString *n in [fm contentsOfDirectoryAtPath:d error:nil]) {
 			if ([[n pathExtension] caseInsensitiveCompare:@"ipa"] == NSOrderedSame) {
 				unsigned long long sz = [[fm attributesOfItemAtPath:[d stringByAppendingPathComponent:n] error:nil] fileSize];
-				[pend addObject:[NSString stringWithFormat:@"%@  (%@)", n, human(sz)]];
+				NSString *full = [d stringByAppendingPathComponent:n];
+				NSString *req = [kDir stringByAppendingPathComponent:[NSString stringWithFormat:@"install-%lx.req", (unsigned long)[full hash]]];
+				[pend addObject:@{@"name": n, @"path": full, @"size": @(sz), @"req": req,
+				    @"requested": @([fm fileExistsAtPath:req])}];
 			}
 		}
 	}
@@ -165,8 +168,11 @@ static NSString *human(unsigned long long b)
 {
 	if (s == 0) {
 		BOOL ok = access("/topaz/bin/topaz-install", X_OK) == 0;
-		return [NSString stringWithFormat:@"Installer helper: %@. Download an .ipa in Safari or drop it in %@; it installs 20-40 s after the file stops growing. Swipe left on an app to uninstall.",
-		    ok ? @"ready" : @"MISSING (/topaz/bin/topaz-install)", kDir];
+		return [NSString stringWithFormat:@"Installer helper: %@. Tap an app to open it, swipe left to uninstall.",
+		    ok ? @"ready" : @"MISSING (/topaz/bin/topaz-install)"];
+	}
+	if (s == 1) {
+		return [NSString stringWithFormat:@"Download an .ipa in Safari or drop it in %@. It appears here; tap it to install (about 20-40 s). Wait until the download has finished.", kDir];
 	}
 	return nil;
 }
@@ -193,8 +199,16 @@ static NSString *human(unsigned long long b)
 		c.textLabel.text = e.name;
 		c.detailTextLabel.text = [NSString stringWithFormat:@"%@  ·  v%@  ·  %@", e.bid, e.version, human([self.sizes[e.path] unsignedLongLongValue])];
 	} else if (ip.section == 1) {
-		c.textLabel.text = self.pending.count == 0 ? @"Nothing waiting" : self.pending[(NSUInteger)ip.row];
-		c.textLabel.textColor = self.pending.count == 0 ? [UIColor secondaryLabelColor] : [UIColor labelColor];
+		if (self.pending.count == 0) {
+			c.textLabel.text = @"Nothing waiting";
+			c.textLabel.textColor = [UIColor secondaryLabelColor];
+		} else {
+			NSDictionary *p = self.pending[(NSUInteger)ip.row];
+			c.textLabel.text = p[@"name"];
+			c.detailTextLabel.text = [p[@"requested"] boolValue] ? [NSString stringWithFormat:@"%@  ·  installing…", human([p[@"size"] unsignedLongLongValue])]
+			    : [NSString stringWithFormat:@"%@  ·  tap to install", human([p[@"size"] unsignedLongLongValue])];
+			c.accessoryType = [p[@"requested"] boolValue] ? UITableViewCellAccessoryNone : UITableViewCellAccessoryDisclosureIndicator;
+		}
 	} else {
 		if (self.logLines.count == 0) {
 			c.textLabel.text = @"No installs yet";
@@ -248,6 +262,25 @@ static NSString *human(unsigned long long b)
 - (void)tableView:(UITableView *)tv didSelectRowAtIndexPath:(NSIndexPath *)ip
 {
 	[tv deselectRowAtIndexPath:ip animated:YES];
+	if (ip.section == 1 && self.pending.count > 0) {
+		NSDictionary *p = self.pending[(NSUInteger)ip.row];
+		if ([p[@"requested"] boolValue]) {
+			return;
+		}
+		UIAlertController *a = [UIAlertController alertControllerWithTitle:[@"Install " stringByAppendingString:p[@"name"]]
+		    message:[NSString stringWithFormat:@"%@. Make sure the download has finished.", human([p[@"size"] unsignedLongLongValue])]
+		    preferredStyle:UIAlertControllerStyleAlert];
+		[a addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+		[a addAction:[UIAlertAction actionWithTitle:@"Install" style:UIAlertActionStyleDefault handler:^(UIAlertAction *x) {
+			NSError *err = nil;
+			if (![p[@"path"] writeToFile:p[@"req"] atomically:YES encoding:NSUTF8StringEncoding error:&err]) {
+				[self say:@"Cannot write the request" text:err.localizedDescription ?: p[@"req"]];
+			}
+			[self reload];
+		}]];
+		[self presentViewController:a animated:YES completion:nil];
+		return;
+	}
 	if (ip.section != 0 || self.apps.count == 0) {
 		return;
 	}
