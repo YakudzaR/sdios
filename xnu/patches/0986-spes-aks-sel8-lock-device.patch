@@ -1,0 +1,15 @@
+From: Claude <noreply@anthropic.com>
+Subject: [PATCH] spes: AppleKeyStore selector 8 locks the device when a software passcode is set
+
+diff --git a/iokit/Kernel/arm/SweetKeyStore.cpp b/iokit/Kernel/arm/SweetKeyStore.cpp
+index a0dd7bf..190d32f 100644
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -297,6 +297,7 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		}
+ 		break;
+ 	}
++	case 8: /* SpringBoard calls this when the screen locks: treated as lock_device (to be verified) */
+ 	case kAKSLockBag:
+ 		args->scalarOutputCount = 0;
+ 		if (g_pass_set) {

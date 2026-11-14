@@ -1059,8 +1059,8 @@ static void *aks_probe(void *unused)
 		return NULL;
 	}
 	fprintf(stderr, "topaz-fix: aksprobe start (no override: state %d, since boot %d)\n", get(NULL), since != NULL ? since(NULL) : -9);
-	for (int sls = 0; sls < 2; sls++) {
-		for (int f = 0; f < 8; f++) {
+	for (int sls = 0; sls < 6; sls++) {
+		for (int f = 4; f < 5; f++) {
 			int r = aks_set(f, sls);
 			usleep(1500000);
 			fprintf(stderr, "topaz-fix: aksprobe flags %d sls %d (set %d) -> state %d, since boot %d\n", f, sls, r, get(NULL), since != NULL ? since(NULL) : -9);
