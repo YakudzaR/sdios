@@ -1,5 +1,5 @@
 #!/bin/bash
-# Put an .app (zipped, e.g. StressTest.app.zip from the stress-app CI build, branch builds-stress) into /Applications on the
+# Put an .app (zipped, or an .ipa, e.g. StressTest.app.zip from the stress-app CI build, branch builds-stress) into /Applications on the
 # iOS root on the SD card.
 #   sudo bash tools/sweet-install-app.sh /dev/sdX1 PATH/TO/App.app.zip     (the 0xAF partition, NOT the disk)
 # fsck.hfsplus, mount read-write, unzip into /Applications (root:wheel, dirs 0755, files 0644, the binary 0755),
@@ -15,6 +15,8 @@ command -v fsck.hfsplus >/dev/null || { echo "install hfsprogs (sudo apt install
 command -v unzip >/dev/null || { echo "install unzip (sudo apt install unzip)"; exit 1; }
 T=$(mktemp -d)
 unzip -q "$ZIP" -d "$T"
+# an .ipa has the app in Payload/: use it from there
+if [ -d "$T/Payload" ]; then mv "$T"/Payload/*.app "$T"/ 2>/dev/null || true; fi
 APPS=$(cd "$T" && ls -d *.app 2>/dev/null || true)
 [ -n "$APPS" ] || { echo "no .app inside $ZIP"; exit 1; }
 echo "app(s): $APPS"
