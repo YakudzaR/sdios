@@ -1,0 +1,16 @@
+From: Claude <noreply@anthropic.com>
+Subject: [PATCH] spes: AppleKeyStore reports lock state 3 (disabled) while no passcode is set
+
+diff --git a/iokit/Kernel/arm/SweetKeyStore.cpp b/iokit/Kernel/arm/SweetKeyStore.cpp
+index 190d32f..fca612b 100644
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -213,7 +213,7 @@ sweet_aks_device_state(IOExternalMethodArguments *args)
+ 		const char *key;
+ 		uint8_t value;
+ 	} fields[] = {
+-		{ "ss", (uint8_t)sweet_aks_lock_flags() }, { "sls", (uint8_t)(g_probe_flags >= 0 ? g_probe_sls : g_locked) }, { "sb", 0 }, { "sfa", 0 },
++		{ "ss", (uint8_t)sweet_aks_lock_flags() }, { "sls", (uint8_t)(g_probe_flags >= 0 ? g_probe_sls : (g_pass_set ? g_locked : 3)) }, { "sb", 0 }, { "sfa", 0 },
+ 		{ "sgs", 0 }, { "sas", 0 }, { "sgpe", 0 }, { "srcd", 0 },
+ 	};
+ 	uint8_t buf[128];

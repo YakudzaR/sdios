@@ -1050,6 +1050,9 @@ static int aks_set(int flags, int sls)
 
 static void *aks_probe(void *unused)
 {
+	if (access("/var/mobile/Media/aks-probe", F_OK) != 0) {
+		return NULL; /* test only: create that file to run the probe */
+	}
 	sleep(45);
 	void *h = dlopen("/System/Library/PrivateFrameworks/MobileKeyBag.framework/MobileKeyBag", RTLD_NOW);
 	int (*get)(CFDictionaryRef) = h != NULL ? (int (*)(CFDictionaryRef))dlsym(h, "MKBGetDeviceLockState") : NULL;
