@@ -1,0 +1,50 @@
+From: Claude <noreply@anthropic.com>
+Subject: [PATCH] spes: log AppleKeyStore secret-carrying selector arguments
+
+diff --git a/iokit/Kernel/arm/SweetKeyStore.cpp b/iokit/Kernel/arm/SweetKeyStore.cpp
+index 73d9267..f760d57 100644
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -170,6 +170,32 @@ sweet_aks_struct_out_size(IOExternalMethodArguments *args)
+ 	       (uint32_t)args->structureOutputDescriptor->getLength() : args->structureOutputSize;
+ }
+ 
++/*
++ * Passcode bring-up: log the arguments of the selectors that carry a secret (set_system 5, unlock_device 9,
++ * 8, change_secret 15) and of any selector this stub does not know, so the next step knows their layout.
++ */
++static void
++sweet_aks_dump_args(const char *name, uint32_t selector, IOExternalMethodArguments *args)
++{
++	char line[256];
++	unsigned int n = 0;
++	n += snprintf(line + n, sizeof(line) - n, "SWEET AKS ARGS: %s sel %u scalars", name, selector);
++	for (uint32_t i = 0; i < args->scalarInputCount && i < 12 && n < sizeof(line) - 20; i++) {
++		n += snprintf(line + n, sizeof(line) - n, " %llx", args->scalarInput[i]);
++	}
++	IOLog("%s\n", line);
++	uint32_t len = args->structureInputDescriptor != NULL ?
++	    (uint32_t)args->structureInputDescriptor->getLength() : args->structureInputSize;
++	if (args->structureInput != NULL && len > 0) {
++		const uint8_t *b = (const uint8_t *)args->structureInput;
++		n = snprintf(line, sizeof(line), "SWEET AKS ARGS: %s sel %u struct %u:", name, selector, len);
++		for (uint32_t i = 0; i < len && i < 64 && n < sizeof(line) - 4; i++) {
++			n += snprintf(line + n, sizeof(line) - n, " %02x", b[i]);
++		}
++		IOLog("%s\n", line);
++	}
++}
++
+ IOReturn
+ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArguments *args,
+     __unused IOExternalMethodDispatch *dispatch, __unused OSObject *target,
+@@ -277,6 +303,9 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 
+ 	char name[32];
+ 	proc_selfname(name, sizeof(name));
++	if (selector == 5 || selector == 8 || selector == 9 || selector == 15 || ret == kIOReturnUnsupported) {
++		sweet_aks_dump_args(name, selector, args);
++	}
+ 	IOLog("SWEET AKS: %s sel %u arg0 %llu in %u/%u out %u/%u -> 0x%x\n", name, selector,
+ 	    arg0, in_scalars, in_struct, out_scalars, out_struct, ret);
+ 	return ret;
