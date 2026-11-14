@@ -646,12 +646,74 @@ static void *wifi_helper(void *unused)
  * LaunchServices, so no icon appears. A minute after start (then every 20 s, 10 rounds) ask LaunchServices to
  * register every /Applications/*.app whose bundle id begins with "com.topaz." and is not installed yet.
  */
+/*
+ * IPA watcher: every round of the registrar loop, look for *.ipa files in the drop folder /var/mobile/Media/Install,
+ * /var/mobile/Media/Downloads and Safari's download folders (inside Safari's data container:
+ * .../Containers/Data/Application/<id>/Library/Safari/Downloads/<id>/). A file whose size did not change since the last
+ * round (download finished) is handed to the setuid-root helper /topaz/bin/topaz-install, which unpacks it into
+ * /Applications; the registrar then registers the new app. The helper renames the file to .done or .failed.
+ */
+static NSMutableDictionary *g_ipa_sizes;
+static void ipa_try(NSString *path)
+{
+	NSDictionary *at = [[NSFileManager defaultManager] attributesOfItemAtPath:path error:nil];
+	NSNumber *sz = [at objectForKey:NSFileSize];
+	if (sz == nil || [sz unsignedLongLongValue] == 0) {
+		return;
+	}
+	if (g_ipa_sizes == nil) {
+		g_ipa_sizes = [[NSMutableDictionary alloc] init];
+	}
+	NSNumber *prev = [g_ipa_sizes objectForKey:path];
+	[g_ipa_sizes setObject:sz forKey:path];
+	if (prev == nil || ![prev isEqualToNumber:sz]) {
+		fprintf(stderr, "topaz-fix: installer: found %s (%llu bytes), waiting for the size to settle\n", [path UTF8String], [sz unsignedLongLongValue]);
+		return;
+	}
+	pid_t pid = 0;
+	const char *av[] = {"/topaz/bin/topaz-install", [path fileSystemRepresentation], NULL};
+	int sp = posix_spawn(&pid, "/topaz/bin/topaz-install", NULL, NULL, (char *const *)av, environ);
+	int status = 0;
+	if (sp == 0) {
+		waitpid(pid, &status, 0);
+	}
+	fprintf(stderr, "topaz-fix: installer: %s -> spawn %d exit status 0x%x\n", [path UTF8String], sp, status);
+	[g_ipa_sizes removeObjectForKey:path];
+}
+
+static void ipa_scan_dir(NSString *dir)
+{
+	for (NSString *n in [[NSFileManager defaultManager] contentsOfDirectoryAtPath:dir error:nil]) {
+		if ([[n pathExtension] caseInsensitiveCompare:@"ipa"] == NSOrderedSame) {
+			ipa_try([dir stringByAppendingPathComponent:n]);
+		}
+	}
+}
+
+static void ipa_scan(void)
+{
+	if (access("/topaz/bin/topaz-install", X_OK) != 0) {
+		return;
+	}
+	NSFileManager *fm = [NSFileManager defaultManager];
+	ipa_scan_dir(@"/var/mobile/Media/Install");
+	ipa_scan_dir(@"/var/mobile/Media/Downloads");
+	NSString *root = @"/var/mobile/Containers/Data/Application";
+	for (NSString *u in [fm contentsOfDirectoryAtPath:root error:nil]) {
+		NSString *dl = [[root stringByAppendingPathComponent:u] stringByAppendingPathComponent:@"Library/Safari/Downloads"];
+		for (NSString *sub in [fm contentsOfDirectoryAtPath:dl error:nil]) {
+			ipa_scan_dir([dl stringByAppendingPathComponent:sub]);
+		}
+	}
+}
+
 static void *app_registrar(void *unused)
 {
 	sleep(40);
 	dlopen("/System/Library/Frameworks/CoreServices.framework/CoreServices", RTLD_NOW);
-	for (int round = 0; round < 10; round++) {
+	for (int round = 0; ; round++) {
 		@autoreleasepool {
+			ipa_scan();
 			Class wc = objc_getClass("LSApplicationWorkspace");
 			id w = wc != Nil ? ((id (*)(id, SEL))objc_msgSend)((id)wc, sel_registerName("defaultWorkspace")) : nil;
 			if (w == nil) {
