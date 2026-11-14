@@ -988,6 +988,32 @@ static intptr_t slide_for(const void *addr, const char **name)
 	return 0;
 }
 
+/*
+ * Settings > General > Date & Time: -[PSGDateTimeController setAutomaticTimeFooter] asks CoreLocation (synchronous XPC to
+ * locationd, which does not run here) and blocks the main thread forever. The method only sets the footer text under
+ * "Set Automatically", so it is replaced by an empty one.
+ */
+static void my_dt_footer(id self, SEL _cmd)
+{
+}
+
+static void *watch_datetime(void *unused)
+{
+	for (int i = 0; i < 6000; i++) {
+		Class c = objc_getClass("PSGDateTimeController");
+		if (c != Nil) {
+			Method m = class_getInstanceMethod(c, sel_registerName("setAutomaticTimeFooter"));
+			if (m != NULL) {
+				method_setImplementation(m, (IMP)my_dt_footer);
+			}
+			fprintf(stderr, "topaz-fix: patched PSGDateTimeController setAutomaticTimeFooter (%p)\n", (void *)m);
+			return NULL;
+		}
+		usleep(20000);
+	}
+	return NULL;
+}
+
 static void *hang_watchdog(void *unused)
 {
 	sleep(30);
@@ -1153,6 +1179,10 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	pthread_t t;
 	if (pthread_create(&t, NULL, watch, NULL) == 0) {
 		pthread_detach(t);
+	}
+	pthread_t t15;
+	if (pthread_create(&t15, NULL, watch_datetime, NULL) == 0) {
+		pthread_detach(t15);
 	}
 	g_main_thread = mach_thread_self();
 	pthread_t t14;
