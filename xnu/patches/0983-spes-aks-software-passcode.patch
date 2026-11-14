@@ -52,7 +52,7 @@ index f760d57..de4fabb 100644
 +sweet_aks_secret_matches(const uint8_t *s, uint32_t len)
 +{
 +	if (!g_pass_set) {
-+		return len == 0;
++		return true; /* nothing stored: Settings still asks for a "current passcode", accept any */
 +	}
 +	return len == g_pass_len && memcmp(s, g_pass, len) == 0;
 +}
