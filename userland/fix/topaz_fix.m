@@ -10,6 +10,9 @@
  */
 #import <Foundation/Foundation.h>
 #include <spawn.h>
+#include <mach/mach.h>
+#include <mach-o/dyld.h>
+#include <dispatch/dispatch.h>
 #include <Block.h>
 #include <sys/wait.h>
 extern char **environ;
@@ -18,6 +21,8 @@ extern char **environ;
 #include <strings.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <stdarg.h>
+#include <time.h>
 #include <stdlib.h>
 #include <dlfcn.h>
 #import <CoreFoundation/CoreFoundation.h>
@@ -941,6 +946,103 @@ static void aegir_exc(NSException *e)
 	fflush(stderr);
 }
 
+/*
+ * Hang watchdog (Settings): the main thread of Preferences freezes in General > Date & Time. Every 2 s a block is queued on
+ * the main queue; when it has not run for 8 s, the main thread is suspended and its stack is printed (pc, lr and the
+ * frame-pointer chain; raw addresses first with write(2), no locks, then image names with dladdr), then resumed. Addresses
+ * are runtime addresses: the symbolicator wants address minus "slide" (printed per frame).
+ */
+static mach_port_t g_main_thread;
+static volatile uint64_t g_beat;
+
+static uint64_t now_s(void)
+{
+	return (uint64_t)time(NULL);
+}
+
+static void wd_say(const char *fmt, ...)
+{
+	char b[400];
+	va_list ap;
+	va_start(ap, fmt);
+	int n = vsnprintf(b, sizeof b, fmt, ap);
+	va_end(ap);
+	if (n > 0) {
+		write(2, b, (size_t)(n < (int)sizeof b ? n : (int)sizeof b - 1));
+	}
+}
+
+static intptr_t slide_for(const void *addr, const char **name)
+{
+	Dl_info di;
+	*name = "?";
+	if (dladdr(addr, &di) == 0) {
+		return 0;
+	}
+	*name = di.dli_fname != NULL ? di.dli_fname : "?";
+	for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+		if ((const void *)_dyld_get_image_header(i) == di.dli_fbase) {
+			return _dyld_get_image_vmaddr_slide(i);
+		}
+	}
+	return 0;
+}
+
+static void *hang_watchdog(void *unused)
+{
+	sleep(30);
+	int dumps = 0;
+	g_beat = now_s();
+	for (;;) {
+		dispatch_async(dispatch_get_main_queue(), ^{
+			g_beat = now_s();
+		});
+		sleep(2);
+		if (now_s() - g_beat < 8 || g_main_thread == MACH_PORT_NULL || dumps >= 4) {
+			continue;
+		}
+		dumps++;
+		if (thread_suspend(g_main_thread) != KERN_SUCCESS) {
+			continue;
+		}
+		arm_thread_state64_t st;
+		mach_msg_type_number_t cnt = ARM_THREAD_STATE64_COUNT;
+		if (thread_get_state(g_main_thread, ARM_THREAD_STATE64, (thread_state_t)&st, &cnt) == KERN_SUCCESS) {
+			uint64_t pcs[40];
+			int n = 0;
+			pcs[n++] = st.__pc;
+			pcs[n++] = st.__lr;
+			uint64_t fp = st.__fp, sp = st.__sp;
+			wd_say("topaz-fix: hang #%d: main thread stuck for %llu s, sp 0x%llx fp 0x%llx\n", dumps, (unsigned long long)(now_s() - g_beat),
+			    (unsigned long long)sp, (unsigned long long)fp);
+			while (n < 40 && fp > sp && fp - sp < (8u << 20) && (fp & 15) == 0) {
+				uint64_t *f = (uint64_t *)fp;
+				uint64_t next = f[0], ret = f[1];
+				if (ret == 0) {
+					break;
+				}
+				pcs[n++] = ret;
+				if (next <= fp) {
+					break;
+				}
+				fp = next;
+			}
+			for (int i = 0; i < n; i++) {
+				wd_say("topaz-fix: hang #%d frame %d: 0x%llx\n", dumps, i, (unsigned long long)pcs[i]);
+			}
+			for (int i = 0; i < n; i++) {
+				const char *name;
+				intptr_t sl = slide_for((const void *)pcs[i], &name);
+				const char *base = strrchr(name, '/');
+				wd_say("topaz-fix: hang #%d frame %d: slide 0x%lx image %s\n", dumps, i, (long)sl, base != NULL ? base + 1 : name);
+			}
+		}
+		thread_resume(g_main_thread);
+		sleep(10);
+	}
+	return NULL;
+}
+
 __attribute__((constructor)) static void topaz_fix_init(void)
 {
 	const char *pn = getprogname();
@@ -1051,5 +1153,10 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	pthread_t t;
 	if (pthread_create(&t, NULL, watch, NULL) == 0) {
 		pthread_detach(t);
+	}
+	g_main_thread = mach_thread_self();
+	pthread_t t14;
+	if (pthread_create(&t14, NULL, hang_watchdog, NULL) == 0) {
+		pthread_detach(t14);
 	}
 }
