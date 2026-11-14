@@ -1,0 +1,6 @@
+userland/fix/topaz_fix.m:652:32: warning: '/*' within block comment [-Wcomment]
+  652 |  * register every /Applications/*.app whose bundle id begins with "com.topaz." and is not installed yet.
+      |                                ^
+1 warning generated.
+ld: warning: -undefined dynamic_lookup is deprecated on iOS
+userland/fix/out/libtopaz-fix.dylib: Mach-O 64-bit dynamically linked shared library arm64
