@@ -1,0 +1,51 @@
+From: Claude <noreply@anthropic.com>
+Subject: [PATCH] spes: AppleKeyStore test selector 200 to force the lock-state flags
+
+diff --git a/iokit/Kernel/arm/SweetKeyStore.cpp b/iokit/Kernel/arm/SweetKeyStore.cpp
+index b46fac3..a0dd7bf 100644
+--- a/iokit/Kernel/arm/SweetKeyStore.cpp
++++ b/iokit/Kernel/arm/SweetKeyStore.cpp
+@@ -150,6 +150,8 @@ static uint8_t g_pass[SWEET_AKS_PASS_MAX];
+ static uint32_t g_pass_len;
+ static bool g_pass_set;
+ static uint8_t g_locked;
++static int32_t g_probe_flags = -1;  /* selector 200 (test only): force the lock-state flags, -1 = off */
++static uint8_t g_probe_sls;
+ 
+ static bool
+ sweet_aks_read_secret(uint64_t uaddr, uint64_t len, uint8_t *out, uint32_t *outlen)
+@@ -186,6 +188,9 @@ sweet_aks_secret_matches(const uint8_t *s, uint32_t len)
+ static uint32_t
+ sweet_aks_lock_flags(void)
+ {
++	if (g_probe_flags >= 0) {
++		return (uint32_t)g_probe_flags;
++	}
+ 	uint32_t f = SWEET_AKS_LOCK_STATE;
+ 	if (!g_pass_set) {
+ 		f |= 2;
+@@ -208,7 +213,7 @@ sweet_aks_device_state(IOExternalMethodArguments *args)
+ 		const char *key;
+ 		uint8_t value;
+ 	} fields[] = {
+-		{ "ss", (uint8_t)sweet_aks_lock_flags() }, { "sls", g_locked }, { "sb", 0 }, { "sfa", 0 },
++		{ "ss", (uint8_t)sweet_aks_lock_flags() }, { "sls", (uint8_t)(g_probe_flags >= 0 ? g_probe_sls : g_locked) }, { "sb", 0 }, { "sfa", 0 },
+ 		{ "sgs", 0 }, { "sas", 0 }, { "sgpe", 0 }, { "srcd", 0 },
+ 	};
+ 	uint8_t buf[128];
+@@ -326,6 +331,15 @@ AppleKeyStoreUserClient::externalMethod(uint32_t selector, IOExternalMethodArgum
+ 		IOLog("SWEET AKS: passcode now %s (%u bytes)\n", g_pass_set ? "set" : "off", g_pass_len);
+ 		break;
+ 	}
++	case 200: /* test only: scalars flags (-1 = off), sls */
++		args->scalarOutputCount = 0;
++		if (in_scalars < 2) {
++			ret = kIOReturnBadArgument;
++			break;
++		}
++		g_probe_flags = (int32_t)args->scalarInput[0];
++		g_probe_sls = (uint8_t)args->scalarInput[1];
++		break;
+ 	case kAKSGetSystem:
+ 		if (out_scalars < 1) {
+ 			ret = kIOReturnBadArgument;

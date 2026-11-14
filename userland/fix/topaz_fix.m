@@ -1014,6 +1014,63 @@ static void *watch_datetime(void *unused)
 	return NULL;
 }
 
+/*
+ * Lock-state probe (Settings, once per boot): selector 200 of our AppleKeyStore stub forces the lock-state flags and the
+ * "sls" value; for each combination MobileKeyBag's MKBGetDeviceLockState() is asked what it makes of it and the answer
+ * is logged ("topaz-fix: aksprobe flags F sls S -> state R"). The override is switched off at the end.
+ */
+static int aks_set(int flags, int sls)
+{
+	typedef unsigned int (*match_t)(mach_port_t, CFDictionaryRef);
+	typedef CFMutableDictionaryRef (*sm_t)(const char *);
+	typedef unsigned int (*gms_t)(mach_port_t, CFDictionaryRef);
+	typedef int (*open_t)(unsigned int, mach_port_t, uint32_t, unsigned int *);
+	typedef int (*call_t)(unsigned int, uint32_t, const uint64_t *, uint32_t, uint64_t *, uint32_t *);
+	static unsigned int conn;
+	static int ok;
+	if (!ok) {
+		void *k = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
+		sm_t sm = k != NULL ? (sm_t)dlsym(k, "IOServiceMatching") : NULL;
+		gms_t gm = k != NULL ? (gms_t)dlsym(k, "IOServiceGetMatchingService") : NULL;
+		open_t op = k != NULL ? (open_t)dlsym(k, "IOServiceOpen") : NULL;
+		if (sm == NULL || gm == NULL || op == NULL) {
+			return -1;
+		}
+		unsigned int svc = gm(0, (CFDictionaryRef)sm("AppleKeyStore"));
+		if (svc == 0 || op(svc, mach_task_self(), 0, &conn) != 0) {
+			return -2;
+		}
+		ok = 1;
+	}
+	void *k = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
+	call_t cl = (call_t)dlsym(k, "IOConnectCallScalarMethod");
+	uint64_t in[2] = { (uint64_t)(int64_t)flags, (uint64_t)sls };
+	return cl != NULL ? cl(conn, 200, in, 2, NULL, NULL) : -3;
+}
+
+static void *aks_probe(void *unused)
+{
+	sleep(45);
+	void *h = dlopen("/System/Library/PrivateFrameworks/MobileKeyBag.framework/MobileKeyBag", RTLD_NOW);
+	int (*get)(CFDictionaryRef) = h != NULL ? (int (*)(CFDictionaryRef))dlsym(h, "MKBGetDeviceLockState") : NULL;
+	int (*since)(CFDictionaryRef) = h != NULL ? (int (*)(CFDictionaryRef))dlsym(h, "MKBDeviceUnlockedSinceBoot") : NULL;
+	if (get == NULL) {
+		fprintf(stderr, "topaz-fix: aksprobe: MKBGetDeviceLockState not found\n");
+		return NULL;
+	}
+	fprintf(stderr, "topaz-fix: aksprobe start (no override: state %d, since boot %d)\n", get(NULL), since != NULL ? since(NULL) : -9);
+	for (int sls = 0; sls < 2; sls++) {
+		for (int f = 0; f < 8; f++) {
+			int r = aks_set(f, sls);
+			usleep(1500000);
+			fprintf(stderr, "topaz-fix: aksprobe flags %d sls %d (set %d) -> state %d, since boot %d\n", f, sls, r, get(NULL), since != NULL ? since(NULL) : -9);
+		}
+	}
+	aks_set(-1, 0);
+	fprintf(stderr, "topaz-fix: aksprobe done\n");
+	return NULL;
+}
+
 static void *hang_watchdog(void *unused)
 {
 	sleep(30);
@@ -1179,6 +1236,10 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 	pthread_t t;
 	if (pthread_create(&t, NULL, watch, NULL) == 0) {
 		pthread_detach(t);
+	}
+	pthread_t t16;
+	if (pthread_create(&t16, NULL, aks_probe, NULL) == 0) {
+		pthread_detach(t16);
 	}
 	pthread_t t15;
 	if (pthread_create(&t15, NULL, watch_datetime, NULL) == 0) {
