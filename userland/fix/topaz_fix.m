@@ -1176,6 +1176,11 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 		if (pthread_create(&t17, NULL, lock_follower, NULL) == 0) {
 			pthread_detach(t17);
 		}
+		g_main_thread = mach_thread_self();
+		pthread_t t18;
+		if (pthread_create(&t18, NULL, hang_watchdog, NULL) == 0) {
+			pthread_detach(t18);
+		}
 		return;
 	}
 	/*
