@@ -1058,7 +1058,7 @@ static int aks_set(int flags, int sls)
  * Nothing tells the keystore stub to lock when the screen locks (real iOS does that in the kernel keystore), so
  * the lock state stays "unlocked" and the lock screen never asks for the passcode. SpringBoard posts the Darwin
  * notification com.apple.springboard.lockstate (state 1 = locked); on it, selector 8 ("lock device", locks only
- * when a software passcode is set) is sent and keybagd's lock_status notification is posted so clients re-read the state.
+ * when a software passcode is set) is sent, but only if /var/mobile/Media/aks-lock exists (opt-in), and keybagd's lock_status notification is posted so clients re-read the state.
  */
 static void *lock_follower(void *unused)
 {
@@ -1066,6 +1066,10 @@ static void *lock_follower(void *unused)
 	uint32_t st = notify_register_dispatch("com.apple.springboard.lockstate", &token, dispatch_get_global_queue(0, 0), ^(int t) {
 		uint64_t state = 0;
 		notify_get_state(t, &state);
+		if (state != 0 && access("/var/mobile/Media/aks-lock", F_OK) != 0) {
+			/* opt-in: the lock screen cannot show the passcode keypad yet (spes-passcode.md), locking would trap the phone until a reboot */
+			return;
+		}
 		if (state != 0) {
 			int r = aks_call(8, 0, 0, 1);
 			notify_post("com.apple.mobile.keybagd.lock_status");
