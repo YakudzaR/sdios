@@ -9,6 +9,7 @@
  * IPHONE_SHARED_RESOURCES_DIRECTORY is not set in the process; the constructor sets it.
  */
 #import <Foundation/Foundation.h>
+#include <notify.h>
 #include <spawn.h>
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
@@ -1019,7 +1020,7 @@ static void *watch_datetime(void *unused)
  * "sls" value; for each combination MobileKeyBag's MKBGetDeviceLockState() is asked what it makes of it and the answer
  * is logged ("topaz-fix: aksprobe flags F sls S -> state R"). The override is switched off at the end.
  */
-static int aks_set(int flags, int sls)
+static int aks_call(uint32_t sel, uint64_t a0, uint64_t a1, uint32_t n)
 {
 	typedef unsigned int (*match_t)(mach_port_t, CFDictionaryRef);
 	typedef CFMutableDictionaryRef (*sm_t)(const char *);
@@ -1044,8 +1045,37 @@ static int aks_set(int flags, int sls)
 	}
 	void *k = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
 	call_t cl = (call_t)dlsym(k, "IOConnectCallScalarMethod");
-	uint64_t in[2] = { (uint64_t)(int64_t)flags, (uint64_t)sls };
-	return cl != NULL ? cl(conn, 200, in, 2, NULL, NULL) : -3;
+	uint64_t in[2] = { a0, a1 };
+	return cl != NULL ? cl(conn, sel, in, n, NULL, NULL) : -3;
+}
+
+static int aks_set(int flags, int sls)
+{
+	return aks_call(200, (uint64_t)(int64_t)flags, (uint64_t)sls, 2);
+}
+
+/*
+ * Nothing tells the keystore stub to lock when the screen locks (real iOS does that in the kernel keystore), so
+ * the lock state stays "unlocked" and the lock screen never asks for the passcode. SpringBoard posts the Darwin
+ * notification com.apple.springboard.lockstate (state 1 = locked); on it, selector 8 ("lock device", locks only
+ * when a software passcode is set) is sent and keybagd's lock_status notification is posted so clients re-read the state.
+ */
+static void *lock_follower(void *unused)
+{
+	static int token;
+	uint32_t st = notify_register_dispatch("com.apple.springboard.lockstate", &token, dispatch_get_global_queue(0, 0), ^(int t) {
+		uint64_t state = 0;
+		notify_get_state(t, &state);
+		if (state != 0) {
+			int r = aks_call(8, 0, 0, 1);
+			notify_post("com.apple.mobile.keybagd.lock_status");
+			fprintf(stderr, "topaz-fix: lockfollow screen locked (state %llu) -> sel 8 returned %d\n", (unsigned long long)state, r);
+		} else {
+			fprintf(stderr, "topaz-fix: lockfollow screen unlocked (state 0)\n");
+		}
+	});
+	fprintf(stderr, "topaz-fix: lockfollow registered (%u)\n", st);
+	return NULL;
 }
 
 static void *aks_probe(void *unused)
@@ -1141,6 +1171,10 @@ __attribute__((constructor)) static void topaz_fix_init(void)
 		pthread_t t8;
 		if (pthread_create(&t8, NULL, app_registrar, NULL) == 0) {
 			pthread_detach(t8);
+		}
+		pthread_t t17;
+		if (pthread_create(&t17, NULL, lock_follower, NULL) == 0) {
+			pthread_detach(t17);
 		}
 		return;
 	}
